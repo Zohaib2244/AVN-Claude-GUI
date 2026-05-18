@@ -4,6 +4,8 @@ import { ProcessManager, isAuthError } from './processManager';
 import { StatusBarManager } from './statusBar';
 import { UsageTracker } from './usageTracker';
 import { assembleContext, getActiveEditorContext, DroppedItem } from './contextAssembler';
+import { ConversationStore } from './conversationStore';
+import { ProjectIndexer } from './projectIndexer';
 import { ClaudeStreamEvent, ThinkingBudget } from './types';
 
 export interface SessionState {
@@ -16,6 +18,7 @@ export interface SessionState {
 
 export class ChatHandler {
   private state: SessionState;
+  private sessionRestored = false;
 
   constructor(
     private processManager: ProcessManager,
@@ -23,6 +26,7 @@ export class ChatHandler {
     private usageTracker: UsageTracker,
     private context: vscode.ExtensionContext,
     private getWorkspaceRoot: () => string | undefined,
+    private conversationStore: ConversationStore,
   ) {
     const ws = context.workspaceState;
     const config = vscode.workspace.getConfiguration('claude');
@@ -34,6 +38,8 @@ export class ChatHandler {
       droppedItems: [],
     };
     this.statusBar.setYolo(this.state.yoloMode);
+    this.statusBar.setModel(this.state.model);
+    this.statusBar.setBudget(this.state.thinkingBudget);
   }
 
   getModel(): string { return this.state.model; }
@@ -52,11 +58,22 @@ export class ChatHandler {
       return;
     }
 
+    // Restore persisted session on first use (V2)
+    if (!this.sessionRestored) {
+      this.sessionRestored = true;
+      const saved = this.conversationStore.load(workspaceRoot);
+      if (saved) {
+        this.state.sessionId = saved.sessionId;
+        this.state.model = saved.model;
+        this.statusBar.setModel(this.state.model);
+      }
+    }
+
     const command = request.command;
 
     // Handle slash commands
-    if (command === 'clear') { this.doClear(response); return; }
-    if (command === 'index') { this.doIndex(response); return; }
+    if (command === 'clear') { this.doClear(response, workspaceRoot); return; }
+    if (command === 'index') { await this.doIndex(workspaceRoot, response, token); return; }
     if (command === 'help')  { this.doHelp(response); return; }
     if (command === 'fix')   { await this.doFileAction('fix', workspaceRoot, response, token); return; }
     if (command === 'explain') { await this.doFileAction('explain', workspaceRoot, response, token); return; }
@@ -159,6 +176,11 @@ export class ChatHandler {
       this.statusBar.refreshTokens();
     }
 
+    // Persist session so it survives VS Code restart (V2)
+    if (this.state.sessionId) {
+      this.conversationStore.save(workspaceRoot, this.state.sessionId, this.state.model);
+    }
+
     // Detect and apply file edits from the response text
     const fullText = collectedText.join('');
     await this.applyFileEdits(fullText, workspaceRoot, response, abort.signal.aborted);
@@ -224,13 +246,19 @@ export class ChatHandler {
     return this.state.thinkingBudget;
   }
 
-  private doClear(response: vscode.ChatResponseStream): void {
+  private doClear(response: vscode.ChatResponseStream, workspaceRoot: string): void {
     this.state.sessionId = undefined;
+    this.conversationStore.clear(workspaceRoot);
     response.markdown('Conversation cleared.');
   }
 
-  private doIndex(response: vscode.ChatResponseStream): void {
-    response.markdown('Project indexing is a V2 feature — not yet available.');
+  private async doIndex(
+    workspaceRoot: string,
+    response: vscode.ChatResponseStream,
+    token: vscode.CancellationToken,
+  ): Promise<void> {
+    const indexer = new ProjectIndexer(this.processManager);
+    await indexer.index(workspaceRoot, this.state.model, response, token);
   }
 
   private doHelp(response: vscode.ChatResponseStream): void {
@@ -274,6 +302,7 @@ export class ChatHandler {
     if (!picked) { return; }
     this.state.model = picked.label;
     this.context.workspaceState.update('selectedModel', this.state.model);
+    this.statusBar.setModel(this.state.model);
   }
 
   async switchBudget(): Promise<void> {
@@ -304,6 +333,7 @@ export class ChatHandler {
     if (!picked) { return; }
     this.state.thinkingBudget = picked.value;
     this.context.workspaceState.update('thinkingBudget', this.state.thinkingBudget);
+    this.statusBar.setBudget(this.state.thinkingBudget);
   }
 
   toggleYolo(): void {

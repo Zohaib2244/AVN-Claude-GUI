@@ -10,19 +10,23 @@ import {
   getDiagnosticsText,
   getSurroundingCode,
 } from './codeActionProvider';
+import { ConversationStore } from './conversationStore';
+import { ProjectIndexer } from './projectIndexer';
 
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
-  const processManager = new ProcessManager();
-  const usageTracker   = new UsageTracker(context);
-  const statusBar      = new StatusBarManager(usageTracker);
-  const chatHandler    = new ChatHandler(
+  const processManager     = new ProcessManager();
+  const usageTracker       = new UsageTracker(context);
+  const statusBar          = new StatusBarManager(usageTracker);
+  const conversationStore  = new ConversationStore(context);
+  const chatHandler        = new ChatHandler(
     processManager,
     statusBar,
     usageTracker,
     context,
     () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+    conversationStore,
   );
 
   // ─── Chat Participant ───────────────────────────────────────────────────────
@@ -93,6 +97,22 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand('claude.restartProcess', () => {
       vscode.window.showInformationMessage('Claude process restarted.');
+    }),
+
+    vscode.commands.registerCommand('claude.indexProject', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
+      const indexer = new ProjectIndexer(processManager);
+      const cts = new vscode.CancellationTokenSource();
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Claude: Indexing project…', cancellable: true },
+        async (_progress, cancelToken) => {
+          cancelToken.onCancellationRequested(() => cts.cancel());
+          const fakeResponse = makeFakeResponse();
+          await indexer.index(root, chatHandler.getModel(), fakeResponse, cts.token);
+        },
+      );
+      cts.dispose();
     }),
 
     vscode.commands.registerCommand('claude.showUsage', async () => {

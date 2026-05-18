@@ -7,6 +7,8 @@ export class StatusBarManager implements vscode.Disposable {
   private statusItem: vscode.StatusBarItem;
   private yoloItem: vscode.StatusBarItem;
   private tokenItem: vscode.StatusBarItem;
+  private modelItem: vscode.StatusBarItem;
+  private budgetItem: vscode.StatusBarItem;
   private spinnerFrames = ['⟳', '↻', '↺', '⟲'];
   private spinnerIndex = 0;
   private spinnerTimer: NodeJS.Timeout | undefined;
@@ -28,6 +30,13 @@ export class StatusBarManager implements vscode.Disposable {
     this.tokenItem.command = 'claude.showUsage';
     this.tokenItem.show();
 
+    this.modelItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 103);
+    this.modelItem.command = 'claude.switchModel';
+    this.modelItem.show();
+
+    this.budgetItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 102);
+    this.budgetItem.command = 'claude.switchBudget';
+
     this.render();
   }
 
@@ -44,6 +53,22 @@ export class StatusBarManager implements vscode.Disposable {
   setYolo(enabled: boolean): void {
     this.yoloEnabled = enabled;
     this.render();
+  }
+
+  setModel(model: string): void {
+    const short = model.replace(/^claude-/, '').replace(/-\d+-\d+(-\d{8})?$/, '');
+    this.modelItem.text = `⚙ ${short}`;
+    this.modelItem.tooltip = `Model: ${model} — click to switch`;
+  }
+
+  setBudget(budget: string | undefined): void {
+    if (budget) {
+      this.budgetItem.text = `🧠 ${budget}`;
+      this.budgetItem.tooltip = `Thinking budget: ${budget} — click to change`;
+      this.budgetItem.show();
+    } else {
+      this.budgetItem.hide();
+    }
   }
 
   refreshTokens(): void {
@@ -108,6 +133,8 @@ export class StatusBarManager implements vscode.Disposable {
     this.statusItem.dispose();
     this.yoloItem.dispose();
     this.tokenItem.dispose();
+    this.modelItem.dispose();
+    this.budgetItem.dispose();
   }
 }
 
