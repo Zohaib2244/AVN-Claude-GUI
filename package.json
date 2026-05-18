@@ -1,0 +1,104 @@
+{
+  "name": "avn-claude-gui",
+  "displayName": "Claude Code Assistant",
+  "description": "Native VS Code chat participant powered by the Claude Code CLI",
+  "version": "0.1.0",
+  "publisher": "personal",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["AI", "Chat"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "claude.assistant",
+        "name": "claude",
+        "fullName": "Claude",
+        "description": "Claude Code AI assistant",
+        "isSticky": true,
+        "commands": [
+          { "name": "clear",   "description": "Clear conversation history" },
+          { "name": "index",   "description": "Index project (V2 feature)" },
+          { "name": "fix",     "description": "Fix the current file" },
+          { "name": "explain", "description": "Explain the current file" },
+          { "name": "help",    "description": "Show available commands" }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "claude.toggleYolo",
+        "title": "Claude: Toggle YOLO Mode"
+      },
+      {
+        "command": "claude.showUsage",
+        "title": "Claude: Show Usage"
+      },
+      {
+        "command": "claude.switchModel",
+        "title": "Claude: Switch Model"
+      },
+      {
+        "command": "claude.switchBudget",
+        "title": "Claude: Switch Thinking Budget"
+      },
+      {
+        "command": "claude.restartProcess",
+        "title": "Claude: Restart CLI Process"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Code Assistant",
+      "properties": {
+        "claude.models": {
+          "type": "array",
+          "default": [
+            "claude-opus-4-5",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5"
+          ],
+          "description": "Available Claude models"
+        },
+        "claude.defaultModel": {
+          "type": "string",
+          "default": "claude-sonnet-4-5",
+          "description": "Default model to use"
+        },
+        "claude.maxFolderContextKb": {
+          "type": "number",
+          "default": 500,
+          "description": "Maximum KB of folder content to include in context"
+        },
+        "claude.completionDebounceMs": {
+          "type": "number",
+          "default": 500,
+          "description": "Debounce delay in ms for inline completions"
+        },
+        "claude.dailyTokenLimit": {
+          "type": "number",
+          "default": 0,
+          "description": "Daily token limit (0 = no limit)"
+        },
+        "claude.thinkingModels": {
+          "type": "array",
+          "default": ["claude-opus-4-5"],
+          "description": "Models that support extended thinking"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npx @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.0"
+  }
+}
