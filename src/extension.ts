@@ -130,6 +130,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void { /* nothing */ }
 
+function makeFakeResponse(): vscode.ChatResponseStream {
+  return {
+    markdown: (text: unknown) => { vscode.window.showInformationMessage(String(text).slice(0, 200)); },
+    button: () => {},
+    filetree: () => {},
+    anchor: () => {},
+    push: () => {},
+    reference: () => {},
+    progress: () => {},
+    warning: () => {},
+    textEdit: () => {},
+    detectedParticipant: () => {},
+    codeCitation: () => {},
+    moveToConfirmation: () => {},
+  } as unknown as vscode.ChatResponseStream;
+}
+
 async function runCodeAction(
   actionType: string,
   chatHandler: ChatHandler,

@@ -48,6 +48,10 @@
       {
         "command": "claude.restartProcess",
         "title": "Claude: Restart CLI Process"
+      },
+      {
+        "command": "claude.indexProject",
+        "title": "Claude: Index Project"
       }
     ],
     "configuration": {
@@ -56,15 +60,17 @@
         "claude.models": {
           "type": "array",
           "default": [
+            "claude-opus-4-7",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
             "claude-opus-4-5",
-            "claude-sonnet-4-5",
-            "claude-haiku-4-5"
+            "claude-sonnet-4-5"
           ],
           "description": "Available Claude models"
         },
         "claude.defaultModel": {
           "type": "string",
-          "default": "claude-sonnet-4-5",
+          "default": "claude-sonnet-4-6",
           "description": "Default model to use"
         },
         "claude.maxFolderContextKb": {
@@ -84,7 +90,7 @@
         },
         "claude.thinkingModels": {
           "type": "array",
-          "default": ["claude-opus-4-5"],
+          "default": ["claude-opus-4-7", "claude-opus-4-5"],
           "description": "Models that support extended thinking"
         }
       }
