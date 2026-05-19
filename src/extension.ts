@@ -11,7 +11,7 @@ import {
   getDiagnosticsText,
   getSurroundingCode,
 } from './codeActionProvider';
-import { ConversationStore } from './conversationStore';
+import { SessionManager } from './sessionManager';
 import { ProjectIndexer } from './projectIndexer';
 import { ClaudeViewProvider } from './claudeViewProvider';
 import { ChatStream } from './types';
@@ -22,14 +22,14 @@ export function activate(context: vscode.ExtensionContext): void {
   const processManager    = new ProcessManager();
   const usageTracker      = new UsageTracker(context);
   const statusBar         = new StatusBarManager(usageTracker);
-  const conversationStore = new ConversationStore(context);
-  const chatHandler       = new ChatHandler(
+  const sessionManager = new SessionManager(context);
+  const chatHandler    = new ChatHandler(
     processManager,
     statusBar,
     usageTracker,
     context,
     getWorkspaceRoot,
-    conversationStore,
+    sessionManager,
   );
 
   // ─── Sidebar Webview ────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import { ChatHandler } from './chatHandler';
 import { ChatStream } from './types';
 import { UsageTracker } from './usageTracker';
 import { DroppedItem, getActiveEditorContext } from './contextAssembler';
+import { SessionManager } from './sessionManager';
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.avif', '.tiff']);
 const IMAGE_MIME: Record<string, string> = {
@@ -23,6 +24,7 @@ interface WebviewMessage {
   name?: string;
   uriList?: string;
   query?: string;
+  sessionId?: string;
 }
 
 export class ClaudeViewProvider implements vscode.WebviewViewProvider {
@@ -40,6 +42,8 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     private readonly getWorkspaceRoot: () => string | undefined,
   ) {}
 
+  private get _sessionManager(): SessionManager { return this.chatHandler.getSessionManager(); }
+
   public resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
@@ -55,10 +59,10 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
 
   public async sendExternalPrompt(fullPrompt: string, displayText: string): Promise<void> {
     await vscode.commands.executeCommand(`${ClaudeViewProvider.viewType}.focus`);
-    const workspaceRoot = this.getWorkspaceRoot();
-    if (!workspaceRoot) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
+    const root = this.getWorkspaceRoot();
+    if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
     this._post({ type: 'addUserMessage', text: displayText });
-    await this.runRequest(fullPrompt, undefined, workspaceRoot);
+    await this.runRequest(fullPrompt, undefined, root);
   }
 
   public async showUsage(): Promise<void> {
@@ -79,51 +83,48 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     for (const msg of pending) { this._view?.webview.postMessage(msg); }
   }
 
-  private _fullState() {
+  private _pushSessions(root: string): void {
+    const sessions  = this._sessionManager.list(root);
+    const activeId  = this._sessionManager.activeId(root);
+    this._post({ type: 'updateSessions', sessions, activeId });
+  }
+
+  private _fullState(root?: string) {
     const config = vscode.workspace.getConfiguration('claude');
-    return { type: 'setState', model: this.chatHandler.getModel(), mode: this.chatHandler.getMode(), yoloMode: this.chatHandler.getYolo(), availableModels: config.get<string[]>('models', []) };
-  }
-
-  // ── Convert dropped item → webview attachment payload ───────────────────
-  private async _toAttachmentPayload(item: DroppedItem): Promise<{ name: string; uri: string; isFolder?: boolean; dataUrl?: string }> {
-    const base = { name: item.label, uri: item.uri.toString() };
-    if (item.isFolder) { return { ...base, isFolder: true }; }
-    const ext = path.extname(item.label).toLowerCase();
-    if (IMAGE_EXTS.has(ext)) {
-      try {
-        const bytes = await vscode.workspace.fs.readFile(item.uri);
-        if (bytes.length < 5 * 1024 * 1024) {
-          const mime   = IMAGE_MIME[ext] ?? 'image/png';
-          const dataUrl = `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`;
-          return { ...base, dataUrl };
-        }
-      } catch { /* fall through */ }
-    }
-    return base;
-  }
-
-  private async _postFilesAttached(items: DroppedItem[]): Promise<void> {
-    const files = await Promise.all(items.map(i => this._toAttachmentPayload(i)));
-    this._post({ type: 'filesAttached', files });
+    return {
+      type:            'setState',
+      model:           this.chatHandler.getModel(),
+      mode:            this.chatHandler.getMode(),
+      yoloMode:        this.chatHandler.getYolo(),
+      availableModels: config.get<string[]>('models', []),
+    };
   }
 
   private async handleMessage(msg: WebviewMessage): Promise<void> {
-    const workspaceRoot = this.getWorkspaceRoot();
+    const root = this.getWorkspaceRoot();
 
     switch (msg.type) {
+
       case 'ready':
         this._isReady = true;
         this._flushPending();
         this._post(this._fullState());
+        if (root) { this._pushSessions(root); }
         break;
 
       case 'send': {
-        if (!workspaceRoot) { this._post({ type: 'showError', text: 'No workspace folder open.' }); return; }
+        if (!root) { this._post({ type: 'showError', text: 'No workspace folder open.' }); return; }
         const cmd  = msg.command;
         const text = msg.text?.trim() ?? '';
-        if (cmd === 'clear') { this.chatHandler.clearSession(workspaceRoot); this._post({ type: 'clearMessages' }); return; }
+        if (cmd === 'clear') {
+          this.chatHandler.clearSession(root);
+          this._post({ type: 'clearMessages' });
+          if (root) { this._pushSessions(root); }
+          return;
+        }
         if (!text && !cmd) { return; }
-        await this.runRequest(text, cmd, workspaceRoot);
+        await this.runRequest(text, cmd, root);
+        if (root) { this._pushSessions(root); }
         break;
       }
 
@@ -131,12 +132,50 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         this._currentCts?.cancel();
         break;
 
+      // ── Session CRUD ────────────────────────────────────────────────────
+      case 'createSession': {
+        if (!root) { break; }
+        this.chatHandler.createNewSession(root);
+        this._post({ type: 'clearMessages' });
+        this._post(this._fullState());
+        this._pushSessions(root);
+        break;
+      }
+
+      case 'switchSession': {
+        if (!root || !msg.sessionId) { break; }
+        const s = this.chatHandler.switchSession(root, msg.sessionId);
+        if (s) {
+          this._post({ type: 'clearMessages' });
+          this._post(this._fullState());
+          this._pushSessions(root);
+        }
+        break;
+      }
+
+      case 'deleteSession': {
+        if (!root || !msg.sessionId) { break; }
+        const nextId = this._sessionManager.delete(root, msg.sessionId);
+        // If deleted session was active, switch to the next
+        if (nextId) {
+          this.chatHandler.switchSession(root, nextId);
+          this._post({ type: 'clearMessages' });
+          this._post(this._fullState());
+        }
+        this._pushSessions(root);
+        break;
+      }
+
+      case 'renameSession': {
+        if (!root || !msg.sessionId || !msg.name) { break; }
+        this._sessionManager.rename(root, msg.sessionId, msg.name);
+        this._pushSessions(root);
+        break;
+      }
+
+      // ── Model / mode / yolo ────────────────────────────────────────────
       case 'selectModel':
         if (msg.model) { this.chatHandler.setModelDirect(msg.model); this._post({ type: 'setState', model: this.chatHandler.getModel() }); }
-        break;
-
-      case 'switchBudget':
-        await this.chatHandler.switchBudget();
         break;
 
       case 'toggleYolo':
@@ -148,6 +187,11 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         if (msg.mode === 'agent' || msg.mode === 'plan') { this.chatHandler.setMode(msg.mode); }
         break;
 
+      case 'switchBudget':
+        await this.chatHandler.switchBudget();
+        break;
+
+      // ── Context ────────────────────────────────────────────────────────
       case 'requestContext': {
         const { selection } = getActiveEditorContext();
         if (selection) {
@@ -158,6 +202,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      // ── File drop ──────────────────────────────────────────────────────
       case 'drop': {
         const rawUris = (msg.uriList ?? '').split(/\r?\n/).filter((u: string) => u.trim() && !u.startsWith('#'));
         const items   = await this._urisToItems(rawUris);
@@ -165,50 +210,36 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      // ── @ file search ──────────────────────────────────────────────────
       case 'searchFiles': {
         const query = (msg.query ?? '').toLowerCase().trim();
         const wsUri = vscode.workspace.workspaceFolders?.[0]?.uri;
         if (!wsUri) { this._post({ type: 'fileSearchResults', files: [] }); break; }
         try {
-          const fileUris = await vscode.workspace.findFiles('**/*', '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**,**/.vscode-test/**}', 400);
-
-          // Collect unique directory paths from files
-          const dirSet = new Set<string>();
+          const fileUris = await vscode.workspace.findFiles('**/*', '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**}', 400);
+          const dirSet   = new Set<string>();
           fileUris.forEach(u => {
-            const rel   = vscode.workspace.asRelativePath(u);
+            const rel = vscode.workspace.asRelativePath(u);
             const parts = rel.split('/');
             for (let i = 1; i < parts.length; i++) { dirSet.add(parts.slice(0, i).join('/')); }
           });
-
-          type FR = { name: string; relPath: string; uri: string; isFolder: boolean };
+          type FR = { name: string; relPath: string; uri: string; isFolder: boolean; ext: string };
           const results: FR[] = [];
-
-          // Folders first
           Array.from(dirSet)
             .filter(d => !query || d.toLowerCase().includes(query) || path.basename(d).toLowerCase().includes(query))
-            .sort()
-            .slice(0, 20)
-            .forEach(d => {
-              const parent = path.dirname(d);
-              results.push({ name: path.basename(d), relPath: parent === '.' ? '' : parent + '/', uri: vscode.Uri.joinPath(wsUri, d).toString(), isFolder: true });
-            });
-
-          // Then files
+            .sort().slice(0, 20)
+            .forEach(d => { const parent = path.dirname(d); results.push({ name: path.basename(d), relPath: parent === '.' ? '' : parent + '/', uri: vscode.Uri.joinPath(wsUri, d).toString(), isFolder: true, ext: '' }); });
           fileUris
             .filter(u => { const rel = vscode.workspace.asRelativePath(u); return !query || rel.toLowerCase().includes(query) || path.basename(u.fsPath).toLowerCase().includes(query); })
             .sort((a, b) => vscode.workspace.asRelativePath(a).localeCompare(vscode.workspace.asRelativePath(b)))
             .slice(0, 30)
-            .forEach(u => {
-              const rel    = vscode.workspace.asRelativePath(u);
-              const parent = path.dirname(rel);
-              results.push({ name: path.basename(u.fsPath), relPath: parent === '.' ? '' : parent + '/', uri: u.toString(), isFolder: false });
-            });
-
+            .forEach(u => { const rel = vscode.workspace.asRelativePath(u); const parent = path.dirname(rel); results.push({ name: path.basename(u.fsPath), relPath: parent === '.' ? '' : parent + '/', uri: u.toString(), isFolder: false, ext: path.extname(u.fsPath).slice(1).toLowerCase() }); });
           this._post({ type: 'fileSearchResults', files: results.slice(0, 35) });
         } catch { this._post({ type: 'fileSearchResults', files: [] }); }
         break;
       }
 
+      // ── Add file via @ picker ──────────────────────────────────────────
       case 'addFile': {
         if (!msg.uri) { break; }
         try {
@@ -227,6 +258,28 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async _toAttachmentPayload(item: DroppedItem) {
+    const base = { name: item.label, uri: item.uri.toString() };
+    if (item.isFolder) { return { ...base, isFolder: true }; }
+    const ext = path.extname(item.label).toLowerCase();
+    if (IMAGE_EXTS.has(ext)) {
+      try {
+        const bytes = await vscode.workspace.fs.readFile(item.uri);
+        if (bytes.length < 5 * 1024 * 1024) {
+          const mime    = IMAGE_MIME[ext] ?? 'image/png';
+          const dataUrl = `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`;
+          return { ...base, dataUrl };
+        }
+      } catch { /* fall through */ }
+    }
+    return base;
+  }
+
+  private async _postFilesAttached(items: DroppedItem[]): Promise<void> {
+    const files = await Promise.all(items.map(i => this._toAttachmentPayload(i)));
+    this._post({ type: 'filesAttached', files });
+  }
+
   private async _urisToItems(rawUris: string[]): Promise<DroppedItem[]> {
     const items: DroppedItem[] = [];
     for (const raw of rawUris) {
@@ -240,7 +293,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     return items;
   }
 
-  private async runRequest(text: string, command: string | undefined, workspaceRoot: string): Promise<void> {
+  private async runRequest(text: string, command: string | undefined, root: string): Promise<void> {
     this._currentCts?.dispose();
     this._currentCts = new vscode.CancellationTokenSource();
     const token = this._currentCts.token;
@@ -248,7 +301,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     this._post({ type: 'setStatus', status: 'thinking' });
     const stream: ChatStream = { markdown: (chunk: string) => this._post({ type: 'streamChunk', text: chunk }) };
     try {
-      await this.chatHandler.chat(text, command, stream, token, workspaceRoot);
+      await this.chatHandler.chat(text, command, stream, token, root);
     } catch (err) {
       this._post({ type: 'streamChunk', text: `\n\n**Error:** ${err instanceof Error ? err.message : String(err)}` });
     } finally {
@@ -258,10 +311,11 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
   }
 
   private buildHtml(webview: vscode.Webview): string {
-    const nonce     = crypto.randomBytes(16).toString('hex');
-    const csp       = webview.cspSource;
-    const styleUri  = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'chat.css'));
-    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'chat.js'));
+    const nonce       = crypto.randomBytes(16).toString('hex');
+    const csp         = webview.cspSource;
+    const styleUri    = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'chat.css'));
+    const scriptUri   = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'chat.js'));
+    const iconBaseUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'icons'));
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -270,6 +324,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'none'; img-src ${csp} https: data: blob:; style-src ${csp}; script-src 'nonce-${nonce}';">
+  <meta name="icon-base" content="${iconBaseUri}">
   <link rel="stylesheet" href="${styleUri}">
   <title>AVN Chat</title>
 </head>
@@ -279,19 +334,17 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
   <div id="header">
     <div id="status-dot"></div>
     <span id="header-title">AVN Chat</span>
-    <button class="hdr-btn" title="Clear conversation" onclick="clearConversation()">&#128465;</button>
+    <button class="hdr-btn" id="sessions-btn" title="Sessions">&#9776;</button>
+    <button class="hdr-btn" id="clear-btn"    title="Clear conversation">&#128465;</button>
   </div>
 
-  <!-- Messages -->
+  <!-- Main scroll area -->
   <div id="main-area">
     <div id="messages">
       <div id="empty-state">
         <div id="empty-icon">&#10022;</div>
         <div id="empty-title">AVN Chat</div>
-        <div id="empty-sub">
-          Drop files or type <strong>@</strong> to attach.<br>
-          Press <strong>/</strong> for quick commands.
-        </div>
+        <div id="empty-sub">Drop files or type <strong>@</strong> to attach.<br>Press <strong>/</strong> for quick commands.</div>
       </div>
     </div>
 
@@ -301,9 +354,19 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
       <span>Drop files or folders</span>
     </div>
 
-    <!-- Usage overlay -->
+    <!-- Sessions panel (overlay) -->
+    <div id="sessions-panel" hidden>
+      <div id="sp-header">
+        <span id="sp-title">Sessions</span>
+        <button id="sp-new"   title="New session">+ New</button>
+        <button id="sp-close" title="Close">&#215;</button>
+      </div>
+      <div id="sp-list"></div>
+    </div>
+
+    <!-- Usage panel (overlay) -->
     <div id="usage-panel" hidden>
-      <div id="usage-header"><span>Token Usage</span><button id="usage-close" onclick="closeUsage()">&#215;</button></div>
+      <div id="usage-header"><span>Token Usage</span><button id="usage-close">&#215;</button></div>
       <hr class="usage-sep">
       <div class="usage-stat">
         <div class="usage-stat-header"><span class="usage-stat-label">Session</span><span class="usage-stat-value" id="session-val">—</span></div>
@@ -325,27 +388,17 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
   <div id="cmd-picker" hidden>
     <div class="cp-group">
       <div class="cp-group-label">Quick Actions</div>
-      <button class="cp-item" data-cmd="fix">
-        <span class="cp-cmd">/fix</span><span class="cp-desc">Fix issues in the current file</span>
-      </button>
-      <button class="cp-item" data-cmd="explain">
-        <span class="cp-cmd">/explain</span><span class="cp-desc">Explain the current file</span>
-      </button>
+      <button class="cp-item" data-cmd="fix"><span class="cp-cmd">/fix</span><span class="cp-desc">Fix issues in the current file</span></button>
+      <button class="cp-item" data-cmd="explain"><span class="cp-cmd">/explain</span><span class="cp-desc">Explain the current file</span></button>
     </div>
     <div class="cp-group">
       <div class="cp-group-label">Project</div>
-      <button class="cp-item" data-cmd="index">
-        <span class="cp-cmd">/index</span><span class="cp-desc">Index project files for context</span>
-      </button>
+      <button class="cp-item" data-cmd="index"><span class="cp-cmd">/index</span><span class="cp-desc">Index project files for context</span></button>
     </div>
     <div class="cp-group">
       <div class="cp-group-label">Conversation</div>
-      <button class="cp-item" data-cmd="help">
-        <span class="cp-cmd">/help</span><span class="cp-desc">Show all available commands</span>
-      </button>
-      <button class="cp-item" data-cmd="clear">
-        <span class="cp-cmd">/clear</span><span class="cp-desc">Clear conversation history</span>
-      </button>
+      <button class="cp-item" data-cmd="help"><span class="cp-cmd">/help</span><span class="cp-desc">Show all available commands</span></button>
+      <button class="cp-item" data-cmd="clear"><span class="cp-cmd">/clear</span><span class="cp-desc">Clear conversation history</span></button>
     </div>
   </div>
 
@@ -353,7 +406,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
   <div id="file-picker" hidden>
     <div id="fp-header">
       <span>Add file or folder</span>
-      <button id="fp-close" onclick="closeFilePicker(true)">&#215;</button>
+      <button id="fp-close">&#215;</button>
     </div>
     <input id="fp-search" type="text" placeholder="Search files and folders…" autocomplete="off" spellcheck="false">
     <div id="fp-results"></div>
@@ -363,7 +416,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
   <div id="input-card">
     <div id="ctx-line" hidden>
       <span id="ctx-text-inner"></span>
-      <button id="ctx-dismiss-btn" onclick="dismissCtx()" title="Dismiss">&#215;</button>
+      <button id="ctx-dismiss-btn" title="Dismiss">&#215;</button>
     </div>
     <div id="input-main">
       <textarea id="user-input" placeholder="Message AVN Chat…" rows="1"></textarea>
@@ -374,10 +427,10 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
       </button>
     </div>
     <div id="input-toolbar">
-      <button id="add-btn"  onclick="openAddFiles()"   title="Add files (+)">+</button>
-      <button id="cmd-btn"  onclick="toggleCmdPicker()" title="Commands (/)">&#8725;</button>
+      <button id="add-btn" title="Add files (+)">+</button>
+      <button id="cmd-btn" title="Commands (/)">&#8725;</button>
       <div id="tb-chips"></div>
-      <button id="send-btn" onclick="handleSend()"      title="Send (Enter)" disabled>
+      <button id="send-btn" title="Send (Enter)" disabled>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
           <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
         </svg>
@@ -385,14 +438,14 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
-  <!-- Bottom: model picker + footer -->
+  <!-- Bottom wrap: model picker + footer -->
   <div id="bottom-wrap">
     <div id="model-picker" hidden>
       <div id="mp-title">Select Model</div>
       <div id="mp-list"></div>
     </div>
     <div id="footer">
-      <button id="model-btn" title="Click to switch model" onclick="toggleModelPicker()">avnchat</button>
+      <button id="model-btn" title="Click to switch model">avnchat</button>
       <div id="mode-toggle">
         <button class="mode-btn active" data-mode="agent">Agent</button>
         <button class="mode-btn"        data-mode="plan">Plan</button>

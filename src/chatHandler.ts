@@ -4,12 +4,13 @@ import { ProcessManager, isAuthError } from './processManager';
 import { StatusBarManager } from './statusBar';
 import { UsageTracker } from './usageTracker';
 import { assembleContext, getActiveEditorContext, DroppedItem } from './contextAssembler';
-import { ConversationStore } from './conversationStore';
+import { SessionManager, ChatSession } from './sessionManager';
 import { ProjectIndexer } from './projectIndexer';
 import { ChatStream, ClaudeStreamEvent, ThinkingBudget } from './types';
 
 export interface SessionState {
-  sessionId: string | undefined;
+  activeSessionId: string | undefined;
+  claudeSessionId: string | undefined;  // the --resume ID for the CLI
   model: string;
   yoloMode: boolean;
   thinkingBudget: ThinkingBudget | undefined;
@@ -19,7 +20,6 @@ export interface SessionState {
 
 export class ChatHandler {
   private state: SessionState;
-  private sessionRestored = false;
 
   constructor(
     private processManager: ProcessManager,
@@ -27,47 +27,105 @@ export class ChatHandler {
     private usageTracker: UsageTracker,
     private context: vscode.ExtensionContext,
     private getWorkspaceRoot: () => string | undefined,
-    private conversationStore: ConversationStore,
+    private sessionManager: SessionManager,
   ) {
-    const ws = context.workspaceState;
+    const ws     = context.workspaceState;
     const config = vscode.workspace.getConfiguration('claude');
     this.state = {
-      sessionId: undefined,
-      model: ws.get('selectedModel', config.get('defaultModel', 'claude-sonnet-4-5')),
-      yoloMode: ws.get('yoloMode', false),
-      thinkingBudget: ws.get('thinkingBudget', undefined),
-      droppedItems: [],
-      mode: ws.get('mode', 'agent') as 'agent' | 'plan',
+      activeSessionId:  undefined,
+      claudeSessionId:  undefined,
+      model:            ws.get('selectedModel', config.get('defaultModel', 'claude-sonnet-4-5')),
+      yoloMode:         ws.get('yoloMode', false),
+      thinkingBudget:   ws.get('thinkingBudget', undefined),
+      droppedItems:     [],
+      mode:             ws.get('mode', 'agent') as 'agent' | 'plan',
     };
     this.statusBar.setYolo(this.state.yoloMode);
     this.statusBar.setModel(this.state.model);
     this.statusBar.setBudget(this.state.thinkingBudget);
   }
 
-  getModel(): string { return this.state.model; }
-  getYolo(): boolean { return this.state.yoloMode; }
-  getMode(): 'agent' | 'plan' { return this.state.mode; }
-  getSessionId(): string | undefined { return this.state.sessionId; }
+  // ── Getters ────────────────────────────────────────────────────────────────
+  getModel():     string           { return this.state.model; }
+  getYolo():      boolean          { return this.state.yoloMode; }
+  getMode():      'agent' | 'plan' { return this.state.mode; }
+  getSessionId(): string | undefined { return this.state.claudeSessionId; }
+  getSessionManager(): SessionManager { return this.sessionManager; }
 
+  // ── Setters ────────────────────────────────────────────────────────────────
   setMode(mode: 'agent' | 'plan'): void {
     this.state.mode = mode;
     this.context.workspaceState.update('mode', mode);
+    const root = this.getWorkspaceRoot();
+    if (root && this.state.activeSessionId) {
+      this.sessionManager.update(root, this.state.activeSessionId, { mode });
+    }
   }
 
-  /** Directly set the model (used by in-webview model picker). */
   setModelDirect(model: string): void {
     this.state.model = model;
     this.context.workspaceState.update('selectedModel', model);
     this.statusBar.setModel(model);
+    const root = this.getWorkspaceRoot();
+    if (root && this.state.activeSessionId) {
+      this.sessionManager.update(root, this.state.activeSessionId, { model });
+    }
   }
 
-  /** Remove a specific dropped item by its URI string. */
+  toggleYolo(): void {
+    this.state.yoloMode = !this.state.yoloMode;
+    this.context.workspaceState.update('yoloMode', this.state.yoloMode);
+    this.statusBar.setYolo(this.state.yoloMode);
+  }
+
   removeDroppedItemByUri(uriStr: string): void {
     const idx = this.state.droppedItems.findIndex(i => i.uri.toString() === uriStr);
     if (idx >= 0) { this.state.droppedItems.splice(idx, 1); }
   }
 
-  /** Primary entry point used by the sidebar webview. */
+  // ── Session management helpers (called by provider) ────────────────────────
+  /** Load the active session from SessionManager (called once per workspace open). */
+  private loadSession(root: string): void {
+    const s = this.sessionManager.ensureActive(root, this.state.model, this.state.mode);
+    this.state.activeSessionId  = s.id;
+    this.state.claudeSessionId  = s.claudeSessionId;
+    this.state.model            = s.model;
+    this.state.mode             = s.mode;
+    this.statusBar.setModel(this.state.model);
+  }
+
+  /** Switch to a different existing session. */
+  switchSession(root: string, sessionId: string): ChatSession | undefined {
+    const sessions = this.sessionManager.list(root);
+    const target   = sessions.find(s => s.id === sessionId);
+    if (!target) { return undefined; }
+    this.sessionManager.setActive(root, target.id);
+    this.state.activeSessionId = target.id;
+    this.state.claudeSessionId = target.claudeSessionId;
+    this.state.model           = target.model;
+    this.state.mode            = target.mode;
+    this.statusBar.setModel(this.state.model);
+    return target;
+  }
+
+  /** Create a brand-new session and make it active. */
+  createNewSession(root: string): ChatSession {
+    const s = this.sessionManager.create(root, undefined, this.state.model, this.state.mode);
+    this.state.activeSessionId = s.id;
+    this.state.claudeSessionId = undefined;
+    return s;
+  }
+
+  /** Clear the current session context (called by the 'clear' command). */
+  clearSession(root: string): void {
+    // Wipe the Claude CLI session ID so the next turn starts fresh
+    this.state.claudeSessionId = undefined;
+    if (this.state.activeSessionId) {
+      this.sessionManager.update(root, this.state.activeSessionId, { claudeSessionId: undefined, preview: '' });
+    }
+  }
+
+  // ── Main entry point ───────────────────────────────────────────────────────
   async chat(
     userText: string,
     command: string | undefined,
@@ -75,46 +133,35 @@ export class ChatHandler {
     token: vscode.CancellationToken,
     workspaceRoot: string,
   ): Promise<void> {
-    // Restore persisted session on first use
-    if (!this.sessionRestored) {
-      this.sessionRestored = true;
-      const saved = this.conversationStore.load(workspaceRoot);
-      if (saved) {
-        this.state.sessionId = saved.sessionId;
-        this.state.model = saved.model;
-        this.statusBar.setModel(this.state.model);
-      }
-    }
+    // Load active session on first use
+    if (!this.state.activeSessionId) { this.loadSession(workspaceRoot); }
 
-    if (command === 'index') { await this.doIndex(workspaceRoot, response, token); return; }
-    if (command === 'help')  { this.doHelp(response); return; }
-    if (command === 'fix')   { await this.doFileAction('fix', workspaceRoot, response, token); return; }
+    if (command === 'index')   { await this.doIndex(workspaceRoot, response, token); return; }
+    if (command === 'help')    { this.doHelp(response); return; }
+    if (command === 'fix')     { await this.doFileAction('fix', workspaceRoot, response, token); return; }
     if (command === 'explain') { await this.doFileAction('explain', workspaceRoot, response, token); return; }
 
-    // Regular chat turn — only include explicit drops and active selection, NOT the whole open file
     const { selection } = getActiveEditorContext();
-    const { prompt } = await assembleContext(
-      userText,
-      workspaceRoot,
-      this.state.droppedItems,
-      selection,
-      undefined,
-    );
+    const { prompt }    = await assembleContext(userText, workspaceRoot, this.state.droppedItems, selection, undefined);
     this.state.droppedItems = [];
 
     const finalPrompt = this.state.mode === 'plan'
-      ? '<instruction>\nPlan mode: Analyze the request and outline a detailed implementation plan. Think through the approach carefully. Do NOT write or modify any files — only describe the plan.\n</instruction>\n\n' + prompt
+      ? '<instruction>\nPlan mode: Analyze and outline an implementation plan carefully. Do NOT write or modify any files.\n</instruction>\n\n' + prompt
       : prompt;
+
+    // Update session preview with the user text
+    if (this.state.activeSessionId) {
+      this.sessionManager.update(workspaceRoot, this.state.activeSessionId, {
+        preview: userText.slice(0, 60),
+        model:   this.state.model,
+        mode:    this.state.mode,
+      });
+    }
 
     await this.runClaude(finalPrompt, workspaceRoot, response, token);
   }
 
-  /** Clear the current session without streaming anything — called directly by the provider. */
-  clearSession(workspaceRoot: string): void {
-    this.state.sessionId = undefined;
-    this.conversationStore.clear(workspaceRoot);
-  }
-
+  // ── Claude invocation ──────────────────────────────────────────────────────
   async runClaude(
     prompt: string,
     workspaceRoot: string,
@@ -126,59 +173,41 @@ export class ChatHandler {
     this.statusBar.setStatus('thinking');
 
     const collectedText: string[] = [];
-    let inputTokens = 0;
-    let outputTokens = 0;
+    let inputTokens = 0, outputTokens = 0;
     let lastError: string | undefined;
 
     await new Promise<void>((resolve) => {
       this.processManager.invoke(prompt, {
-        model: this.state.model,
-        yoloMode: this.state.yoloMode,
-        effortLevel: this.getEffortLevel(),
-        sessionId: this.state.sessionId,
+        model:         this.state.model,
+        yoloMode:      this.state.yoloMode,
+        effortLevel:   this.getEffortLevel(),
+        sessionId:     this.state.claudeSessionId,
         workspaceRoot,
-        signal: abort.signal,
+        signal:        abort.signal,
         onEvent: (ev: ClaudeStreamEvent) => {
-          if (ev.session_id) { this.state.sessionId = ev.session_id; }
-
+          if (ev.session_id) { this.state.claudeSessionId = ev.session_id; }
           if (ev.type === 'assistant' && ev.message?.content) {
             for (const block of ev.message.content) {
-              if (block.type === 'text' && block.text) {
-                collectedText.push(block.text);
-                response.markdown(block.text);
-              }
+              if (block.type === 'text' && block.text) { collectedText.push(block.text); response.markdown(block.text); }
             }
             if (ev.message.usage) {
-              inputTokens  += ev.message.usage.input_tokens ?? 0;
+              inputTokens  += ev.message.usage.input_tokens  ?? 0;
               outputTokens += ev.message.usage.output_tokens ?? 0;
             }
           }
-
           if (ev.type === 'result') {
-            if (ev.usage) {
-              inputTokens  = ev.usage.input_tokens ?? inputTokens;
-              outputTokens = ev.usage.output_tokens ?? outputTokens;
-            }
-            if (ev.subtype === 'error' && ev.error) {
-              lastError = ev.error;
-            }
+            if (ev.usage) { inputTokens = ev.usage.input_tokens ?? inputTokens; outputTokens = ev.usage.output_tokens ?? outputTokens; }
+            if (ev.subtype === 'error' && ev.error) { lastError = ev.error; }
           }
         },
         onError: (err) => {
-          if (err.message === 'ENOENT') {
-            response.markdown(
-              '**Claude CLI not found.** Install it from [claude.ai/code](https://claude.ai/code) and ensure it is on your PATH.'
-            );
-          } else {
-            response.markdown(`**CLI error:** ${err.message}`);
-          }
+          response.markdown(err.message === 'ENOENT'
+            ? '**Claude CLI not found.** Install from [claude.ai/code](https://claude.ai/code) and ensure it is on your PATH.'
+            : `**CLI error:** ${err.message}`);
           this.statusBar.setStatus('error');
           resolve();
         },
-        onDone: (sessionId) => {
-          if (sessionId) { this.state.sessionId = sessionId; }
-          resolve();
-        },
+        onDone: (sid) => { if (sid) { this.state.claudeSessionId = sid; } resolve(); },
       });
     });
 
@@ -186,9 +215,7 @@ export class ChatHandler {
 
     if (lastError) {
       if (isAuthError(lastError)) {
-        vscode.window.showErrorMessage(
-          'Claude CLI is not authenticated. Run `claude login` in your terminal.'
-        );
+        vscode.window.showErrorMessage('Claude CLI is not authenticated. Run `claude login` in your terminal.');
       } else {
         response.markdown(`\n\n**Error:** ${lastError}`);
       }
@@ -199,12 +226,13 @@ export class ChatHandler {
       this.statusBar.refreshTokens();
     }
 
-    if (this.state.sessionId) {
-      this.conversationStore.save(workspaceRoot, this.state.sessionId, this.state.model);
+    // Persist the CLI session ID back to the session record
+    const root = this.getWorkspaceRoot();
+    if (root && this.state.activeSessionId && this.state.claudeSessionId) {
+      this.sessionManager.update(root, this.state.activeSessionId, { claudeSessionId: this.state.claudeSessionId });
     }
 
-    const fullText = collectedText.join('');
-    await this.applyFileEdits(fullText, workspaceRoot, response, abort.signal.aborted);
+    await this.applyFileEdits(collectedText.join(''), workspaceRoot, response, abort.signal.aborted);
   }
 
   private async applyFileEdits(
@@ -215,7 +243,6 @@ export class ChatHandler {
   ): Promise<void> {
     const fileBlockRegex = /```(?:\w+)?:([^\n]+)\n([\s\S]*?)```/g;
     const edits: Array<{ filePath: string; content: string }> = [];
-
     let match: RegExpExecArray | null;
     while ((match = fileBlockRegex.exec(responseText)) !== null) {
       const relPath = match[1].trim();
@@ -223,85 +250,52 @@ export class ChatHandler {
       const absPath = path.isAbsolute(relPath) ? relPath : path.join(workspaceRoot, relPath);
       edits.push({ filePath: absPath, content });
     }
-
     if (!edits.length || cancelled) { return; }
 
     const wsEdit = new vscode.WorkspaceEdit();
-    const summaryLines: string[] = ['**Changes applied:**', ''];
-
+    const summaryLines = ['**Changes applied:**', ''];
     for (const edit of edits) {
       const uri = vscode.Uri.file(edit.filePath);
       let existingContent = '';
-      try {
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        existingContent = Buffer.from(bytes).toString('utf8');
-      } catch { /* new file */ }
-
+      try { const bytes = await vscode.workspace.fs.readFile(uri); existingContent = Buffer.from(bytes).toString('utf8'); } catch { /* new file */ }
       const oldLines = existingContent.split('\n').length;
       const newLines = edit.content.split('\n').length;
-      const added   = Math.max(0, newLines - oldLines);
-      const removed = Math.max(0, oldLines - newLines);
-
       wsEdit.createFile(uri, { overwrite: true, ignoreIfExists: false });
       wsEdit.insert(uri, new vscode.Position(0, 0), edit.content);
-
-      const relDisplayPath = path.relative(workspaceRoot, edit.filePath);
-      summaryLines.push(`- \`${relDisplayPath}\`  +${added}  -${removed}`);
+      summaryLines.push(`- \`${path.relative(workspaceRoot, edit.filePath)}\`  +${Math.max(0, newLines - oldLines)}  -${Math.max(0, oldLines - newLines)}`);
     }
-
     const applied = await vscode.workspace.applyEdit(wsEdit);
-    if (applied) {
-      response.markdown('\n\n' + summaryLines.join('\n'));
-    } else {
-      response.markdown('\n\n**Some edits could not be applied — check the Problems panel.**');
-    }
+    response.markdown('\n\n' + (applied ? summaryLines.join('\n') : '**Some edits could not be applied — check the Problems panel.**'));
   }
 
   private getEffortLevel(): ThinkingBudget | undefined {
     if (!this.state.thinkingBudget) { return undefined; }
     const config = vscode.workspace.getConfiguration('claude');
     const thinkingModels: string[] = config.get('thinkingModels', []);
-    if (!thinkingModels.includes(this.state.model)) { return undefined; }
-    return this.state.thinkingBudget;
+    return thinkingModels.includes(this.state.model) ? this.state.thinkingBudget : undefined;
   }
 
-  private async doIndex(
-    workspaceRoot: string,
-    response: ChatStream,
-    token: vscode.CancellationToken,
-  ): Promise<void> {
-    const indexer = new ProjectIndexer(this.processManager);
-    await indexer.index(workspaceRoot, this.state.model, response, token);
+  private async doIndex(root: string, response: ChatStream, token: vscode.CancellationToken): Promise<void> {
+    await new ProjectIndexer(this.processManager).index(root, this.state.model, response, token);
   }
 
   private doHelp(response: ChatStream): void {
     response.markdown([
-      '**Available commands:**',
-      '',
-      '| Command | Description |',
-      '|---------|-------------|',
-      '| `/fix`     | Fix the current file |',
+      '**Available commands:**', '',
+      '| Command | Description |', '|---------|-------------|',
+      '| `/fix`     | Fix issues in the current file |',
       '| `/explain` | Explain the current file |',
       '| `/index`   | Index project files |',
       '| `/help`    | Show this message |',
     ].join('\n'));
   }
 
-  private async doFileAction(
-    action: string,
-    workspaceRoot: string,
-    response: ChatStream,
-    token: vscode.CancellationToken,
-  ): Promise<void> {
+  private async doFileAction(action: string, root: string, response: ChatStream, token: vscode.CancellationToken): Promise<void> {
     const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      response.markdown('**No active file.** Open a file first.');
-      return;
-    }
-    const doc = editor.document;
+    if (!editor) { response.markdown('**No active file.** Open a file first.'); return; }
+    const doc  = editor.document;
     const verb = action === 'fix' ? 'Fix this file' : 'Explain this file';
-    const prompt = `<instruction>${verb}</instruction>\n<file path="${doc.fileName}" lang="${doc.languageId}">\n${doc.getText()}\n</file>`;
-    await this.runClaude(prompt, workspaceRoot, response, token);
+    await this.runClaude(`<instruction>${verb}</instruction>\n<file path="${doc.fileName}" lang="${doc.languageId}">\n${doc.getText()}\n</file>`, root, response, token);
   }
 
   async switchModel(): Promise<void> {
@@ -312,21 +306,16 @@ export class ChatHandler {
       { placeHolder: 'Select model' },
     );
     if (!picked) { return; }
-    this.state.model = picked.label;
-    this.context.workspaceState.update('selectedModel', this.state.model);
-    this.statusBar.setModel(this.state.model);
+    this.setModelDirect(picked.label);
   }
 
   async switchBudget(): Promise<void> {
     const config = vscode.workspace.getConfiguration('claude');
     const thinkingModels: string[] = config.get('thinkingModels', []);
     if (!thinkingModels.includes(this.state.model)) {
-      vscode.window.showInformationMessage(
-        `Extended thinking not available for ${this.state.model}.`
-      );
+      vscode.window.showInformationMessage(`Extended thinking not available for ${this.state.model}.`);
       return;
     }
-
     const options: Array<{ label: string; value: ThinkingBudget | undefined }> = [
       { label: 'Off', value: undefined },
       { label: 'Low (1k tokens)', value: 'low' },
@@ -334,12 +323,8 @@ export class ChatHandler {
       { label: 'High (10k tokens)', value: 'high' },
       { label: 'Max (32k tokens)', value: 'max' },
     ];
-
     const picked = await vscode.window.showQuickPick(
-      options.map(o => ({
-        ...o,
-        description: o.value === this.state.thinkingBudget ? '✓ current' : '',
-      })),
+      options.map(o => ({ ...o, description: o.value === this.state.thinkingBudget ? '✓ current' : '' })),
       { placeHolder: 'Select thinking budget' },
     );
     if (!picked) { return; }
@@ -348,17 +333,6 @@ export class ChatHandler {
     this.statusBar.setBudget(this.state.thinkingBudget);
   }
 
-  toggleYolo(): void {
-    this.state.yoloMode = !this.state.yoloMode;
-    this.context.workspaceState.update('yoloMode', this.state.yoloMode);
-    this.statusBar.setYolo(this.state.yoloMode);
-  }
-
-  addDroppedItems(items: DroppedItem[]): void {
-    this.state.droppedItems.push(...items);
-  }
-
-  clearDroppedItems(): void {
-    this.state.droppedItems = [];
-  }
+  addDroppedItems(items: DroppedItem[]): void  { this.state.droppedItems.push(...items); }
+  clearDroppedItems(): void                     { this.state.droppedItems = []; }
 }
