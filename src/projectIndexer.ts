@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ProcessManager } from './processManager';
+import { ChatStream } from './types';
 
 const EXCLUDED_DIRS = new Set([
   'node_modules', '.git', 'out', 'dist', 'build', '.next', '.nuxt',
@@ -14,7 +15,7 @@ export class ProjectIndexer {
   async index(
     workspaceRoot: string,
     model: string,
-    response: vscode.ChatResponseStream,
+    response: ChatStream,
     token: vscode.CancellationToken,
   ): Promise<void> {
     response.markdown('Scanning project files…\n\n');

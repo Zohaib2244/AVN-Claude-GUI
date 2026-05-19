@@ -1,3 +1,4 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { ProcessManager } from './processManager';
 import { StatusBarManager } from './statusBar';
@@ -12,30 +13,37 @@ import {
 } from './codeActionProvider';
 import { ConversationStore } from './conversationStore';
 import { ProjectIndexer } from './projectIndexer';
+import { ClaudeViewProvider } from './claudeViewProvider';
+import { ChatStream } from './types';
 
 export function activate(context: vscode.ExtensionContext): void {
-  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const getWorkspaceRoot = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
-  const processManager     = new ProcessManager();
-  const usageTracker       = new UsageTracker(context);
-  const statusBar          = new StatusBarManager(usageTracker);
-  const conversationStore  = new ConversationStore(context);
-  const chatHandler        = new ChatHandler(
+  const processManager    = new ProcessManager();
+  const usageTracker      = new UsageTracker(context);
+  const statusBar         = new StatusBarManager(usageTracker);
+  const conversationStore = new ConversationStore(context);
+  const chatHandler       = new ChatHandler(
     processManager,
     statusBar,
     usageTracker,
     context,
-    () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+    getWorkspaceRoot,
     conversationStore,
   );
 
-  // ─── Chat Participant ───────────────────────────────────────────────────────
-  const participant = vscode.chat.createChatParticipant(
-    'claude.assistant',
-    (request, ctx, response, token) => chatHandler.handleRequest(request, ctx, response, token),
+  // ─── Sidebar Webview ────────────────────────────────────────────────────────
+  const viewProvider = new ClaudeViewProvider(
+    context.extensionUri,
+    chatHandler,
+    usageTracker,
+    getWorkspaceRoot,
   );
-  participant.iconPath = new vscode.ThemeIcon('sparkle');
-  context.subscriptions.push(participant);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(ClaudeViewProvider.viewType, viewProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
 
   // ─── Inline Completions ─────────────────────────────────────────────────────
   const completionProvider = new InlineCompletionProvider(
@@ -43,7 +51,7 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBar,
     () => chatHandler.getModel(),
     () => chatHandler.getYolo(),
-    () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+    getWorkspaceRoot,
   );
   context.subscriptions.push(
     vscode.languages.registerInlineCompletionItemProvider({ pattern: '**' }, completionProvider),
@@ -59,35 +67,40 @@ export function activate(context: vscode.ExtensionContext): void {
     )
   );
 
-  // Code action command implementations
   const codeActionCommands: Array<[string, string]> = [
-    ['claude.action.explain',   'explain'],
-    ['claude.action.fix',       'fix'],
-    ['claude.action.refactor',  'refactor'],
-    ['claude.action.addTests',  'addTests'],
-    ['claude.action.addDocs',   'addDocs'],
-    ['claude.action.findBugs',  'findBugs'],
+    ['claude.action.explain',  'explain'],
+    ['claude.action.fix',      'fix'],
+    ['claude.action.refactor', 'refactor'],
+    ['claude.action.addTests', 'addTests'],
+    ['claude.action.addDocs',  'addDocs'],
+    ['claude.action.findBugs', 'findBugs'],
   ];
 
   for (const [cmd, actionType] of codeActionCommands) {
     context.subscriptions.push(
-      vscode.commands.registerCommand(cmd, () => runCodeAction(actionType, chatHandler))
+      vscode.commands.registerCommand(cmd, () => runCodeAction(actionType, chatHandler, viewProvider))
     );
   }
 
   context.subscriptions.push(
     vscode.commands.registerCommand('claude.action.custom', async () => {
       const instruction = await vscode.window.showInputBox({
-        prompt: 'Describe what you\'d like Claude to do with this selection…',
+        prompt: "Describe what you'd like Claude to do with this selection…",
         placeHolder: 'e.g., Convert this to async/await syntax',
       });
-      if (instruction) { runCodeAction('custom', chatHandler, instruction); }
+      if (instruction) { runCodeAction('custom', chatHandler, viewProvider, instruction); }
     })
   );
 
   // ─── Commands ───────────────────────────────────────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand('claude.toggleYolo', () => chatHandler.toggleYolo()),
+    vscode.commands.registerCommand('claude.openChat', () =>
+      vscode.commands.executeCommand(`${ClaudeViewProvider.viewType}.focus`)
+    ),
+
+    vscode.commands.registerCommand('claude.toggleYolo', () => {
+      chatHandler.toggleYolo();
+    }),
 
     vscode.commands.registerCommand('claude.switchModel', () => chatHandler.switchModel()),
 
@@ -100,7 +113,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('claude.indexProject', async () => {
-      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      const root = getWorkspaceRoot();
       if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
       const indexer = new ProjectIndexer(processManager);
       const cts = new vscode.CancellationTokenSource();
@@ -108,20 +121,17 @@ export function activate(context: vscode.ExtensionContext): void {
         { location: vscode.ProgressLocation.Notification, title: 'Claude: Indexing project…', cancellable: true },
         async (_progress, cancelToken) => {
           cancelToken.onCancellationRequested(() => cts.cancel());
-          const fakeResponse = makeFakeResponse();
-          await indexer.index(root, chatHandler.getModel(), fakeResponse, cts.token);
+          const notifStream: ChatStream = {
+            markdown: (text) => vscode.window.showInformationMessage(text.slice(0, 200)),
+          };
+          await indexer.index(root, chatHandler.getModel(), notifStream, cts.token);
         },
       );
       cts.dispose();
     }),
 
-    vscode.commands.registerCommand('claude.showUsage', async () => {
-      const summary = usageTracker.formatSummaryText();
-      await vscode.window.showQuickPick(
-        summary.split('\n').map(line => ({ label: line, description: '' })),
-        { title: 'Claude Usage', placeHolder: 'Token usage summary' },
-      );
-    }),
+    // Usage now shown inside the webview with a visual progress panel
+    vscode.commands.registerCommand('claude.showUsage', () => viewProvider.showUsage()),
   );
 
   // ─── Disposables ────────────────────────────────────────────────────────────
@@ -130,26 +140,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void { /* nothing */ }
 
-function makeFakeResponse(): vscode.ChatResponseStream {
-  return {
-    markdown: (text: unknown) => { vscode.window.showInformationMessage(String(text).slice(0, 200)); },
-    button: () => {},
-    filetree: () => {},
-    anchor: () => {},
-    push: () => {},
-    reference: () => {},
-    progress: () => {},
-    warning: () => {},
-    textEdit: () => {},
-    detectedParticipant: () => {},
-    codeCitation: () => {},
-    moveToConfirmation: () => {},
-  } as unknown as vscode.ChatResponseStream;
-}
-
 async function runCodeAction(
   actionType: string,
   chatHandler: ChatHandler,
+  viewProvider: ClaudeViewProvider,
   customInstruction?: string,
 ): Promise<void> {
   const editor = vscode.window.activeTextEditor;
@@ -158,47 +152,16 @@ async function runCodeAction(
     return;
   }
 
-  const doc       = editor.document;
-  const selection = doc.getText(editor.selection);
+  const doc         = editor.document;
+  const selection   = doc.getText(editor.selection);
   const surrounding = getSurroundingCode(doc, editor.selection);
   const diagnostics = getDiagnosticsText(doc, editor.selection);
 
-  const prompt = buildCodeActionPrompt(
-    actionType,
-    selection,
-    doc.fileName,
-    doc.languageId,
-    surrounding,
-    diagnostics,
-    customInstruction,
+  const fullPrompt  = buildCodeActionPrompt(
+    actionType, selection, doc.fileName, doc.languageId,
+    surrounding, diagnostics, customInstruction,
   );
+  const displayText = `/${actionType}: ${path.basename(doc.fileName)}`;
 
-  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (!workspaceRoot) { return; }
-
-  await vscode.commands.executeCommand('workbench.panel.chat.view.copilot.focus');
-
-  const cts = new vscode.CancellationTokenSource();
-
-  const fakeResponse: vscode.ChatResponseStream = {
-    markdown: (_text: unknown) => { /* displayed via participant */ },
-    button: () => { },
-    filetree: () => { },
-    anchor: () => { },
-    push: () => { },
-    reference: () => { },
-    progress: () => { },
-    warning: () => { },
-    textEdit: () => { },
-    detectedParticipant: () => { },
-    codeCitation: () => { },
-    moveToConfirmation: () => { },
-  } as unknown as vscode.ChatResponseStream;
-
-  // Trigger a chat turn with the code action prompt via VS Code chat
-  await vscode.commands.executeCommand('workbench.action.chat.open', {
-    query: `@claude ${prompt.slice(0, 200)}…`,
-  });
-
-  cts.dispose();
+  await viewProvider.sendExternalPrompt(fullPrompt, displayText);
 }

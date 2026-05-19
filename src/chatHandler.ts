@@ -6,7 +6,7 @@ import { UsageTracker } from './usageTracker';
 import { assembleContext, getActiveEditorContext, DroppedItem } from './contextAssembler';
 import { ConversationStore } from './conversationStore';
 import { ProjectIndexer } from './projectIndexer';
-import { ClaudeStreamEvent, ThinkingBudget } from './types';
+import { ChatStream, ClaudeStreamEvent, ThinkingBudget } from './types';
 
 export interface SessionState {
   sessionId: string | undefined;
@@ -14,6 +14,7 @@ export interface SessionState {
   yoloMode: boolean;
   thinkingBudget: ThinkingBudget | undefined;
   droppedItems: DroppedItem[];
+  mode: 'agent' | 'plan';
 }
 
 export class ChatHandler {
@@ -36,6 +37,7 @@ export class ChatHandler {
       yoloMode: ws.get('yoloMode', false),
       thinkingBudget: ws.get('thinkingBudget', undefined),
       droppedItems: [],
+      mode: ws.get('mode', 'agent') as 'agent' | 'plan',
     };
     this.statusBar.setYolo(this.state.yoloMode);
     this.statusBar.setModel(this.state.model);
@@ -44,21 +46,36 @@ export class ChatHandler {
 
   getModel(): string { return this.state.model; }
   getYolo(): boolean { return this.state.yoloMode; }
+  getMode(): 'agent' | 'plan' { return this.state.mode; }
   getSessionId(): string | undefined { return this.state.sessionId; }
 
-  async handleRequest(
-    request: vscode.ChatRequest,
-    _context: vscode.ChatContext,
-    response: vscode.ChatResponseStream,
-    token: vscode.CancellationToken,
-  ): Promise<void> {
-    const workspaceRoot = this.getWorkspaceRoot();
-    if (!workspaceRoot) {
-      response.markdown('**No workspace folder open.** Please open a folder first.');
-      return;
-    }
+  setMode(mode: 'agent' | 'plan'): void {
+    this.state.mode = mode;
+    this.context.workspaceState.update('mode', mode);
+  }
 
-    // Restore persisted session on first use (V2)
+  /** Directly set the model (used by in-webview model picker). */
+  setModelDirect(model: string): void {
+    this.state.model = model;
+    this.context.workspaceState.update('selectedModel', model);
+    this.statusBar.setModel(model);
+  }
+
+  /** Remove a specific dropped item by its URI string. */
+  removeDroppedItemByUri(uriStr: string): void {
+    const idx = this.state.droppedItems.findIndex(i => i.uri.toString() === uriStr);
+    if (idx >= 0) { this.state.droppedItems.splice(idx, 1); }
+  }
+
+  /** Primary entry point used by the sidebar webview. */
+  async chat(
+    userText: string,
+    command: string | undefined,
+    response: ChatStream,
+    token: vscode.CancellationToken,
+    workspaceRoot: string,
+  ): Promise<void> {
+    // Restore persisted session on first use
     if (!this.sessionRestored) {
       this.sessionRestored = true;
       const saved = this.conversationStore.load(workspaceRoot);
@@ -69,33 +86,39 @@ export class ChatHandler {
       }
     }
 
-    const command = request.command;
-
-    // Handle slash commands
-    if (command === 'clear') { this.doClear(response, workspaceRoot); return; }
     if (command === 'index') { await this.doIndex(workspaceRoot, response, token); return; }
     if (command === 'help')  { this.doHelp(response); return; }
     if (command === 'fix')   { await this.doFileAction('fix', workspaceRoot, response, token); return; }
     if (command === 'explain') { await this.doFileAction('explain', workspaceRoot, response, token); return; }
 
-    // Regular chat turn
-    const { selection, activeFile } = getActiveEditorContext();
+    // Regular chat turn — only include explicit drops and active selection, NOT the whole open file
+    const { selection } = getActiveEditorContext();
     const { prompt } = await assembleContext(
-      request.prompt,
+      userText,
       workspaceRoot,
       this.state.droppedItems,
       selection,
-      activeFile,
+      undefined,
     );
-
     this.state.droppedItems = [];
-    await this.runClaude(prompt, workspaceRoot, response, token);
+
+    const finalPrompt = this.state.mode === 'plan'
+      ? '<instruction>\nPlan mode: Analyze the request and outline a detailed implementation plan. Think through the approach carefully. Do NOT write or modify any files — only describe the plan.\n</instruction>\n\n' + prompt
+      : prompt;
+
+    await this.runClaude(finalPrompt, workspaceRoot, response, token);
+  }
+
+  /** Clear the current session without streaming anything — called directly by the provider. */
+  clearSession(workspaceRoot: string): void {
+    this.state.sessionId = undefined;
+    this.conversationStore.clear(workspaceRoot);
   }
 
   async runClaude(
     prompt: string,
     workspaceRoot: string,
-    response: vscode.ChatResponseStream,
+    response: ChatStream,
     token: vscode.CancellationToken,
   ): Promise<void> {
     const abort = new AbortController();
@@ -176,12 +199,10 @@ export class ChatHandler {
       this.statusBar.refreshTokens();
     }
 
-    // Persist session so it survives VS Code restart (V2)
     if (this.state.sessionId) {
       this.conversationStore.save(workspaceRoot, this.state.sessionId, this.state.model);
     }
 
-    // Detect and apply file edits from the response text
     const fullText = collectedText.join('');
     await this.applyFileEdits(fullText, workspaceRoot, response, abort.signal.aborted);
   }
@@ -189,11 +210,9 @@ export class ChatHandler {
   private async applyFileEdits(
     responseText: string,
     workspaceRoot: string,
-    response: vscode.ChatResponseStream,
+    response: ChatStream,
     cancelled: boolean,
   ): Promise<void> {
-    // Parse fenced code blocks with file path annotations:
-    // ```lang:path/to/file  or  // File: path  patterns
     const fileBlockRegex = /```(?:\w+)?:([^\n]+)\n([\s\S]*?)```/g;
     const edits: Array<{ filePath: string; content: string }> = [];
 
@@ -246,31 +265,24 @@ export class ChatHandler {
     return this.state.thinkingBudget;
   }
 
-  private doClear(response: vscode.ChatResponseStream, workspaceRoot: string): void {
-    this.state.sessionId = undefined;
-    this.conversationStore.clear(workspaceRoot);
-    response.markdown('Conversation cleared.');
-  }
-
   private async doIndex(
     workspaceRoot: string,
-    response: vscode.ChatResponseStream,
+    response: ChatStream,
     token: vscode.CancellationToken,
   ): Promise<void> {
     const indexer = new ProjectIndexer(this.processManager);
     await indexer.index(workspaceRoot, this.state.model, response, token);
   }
 
-  private doHelp(response: vscode.ChatResponseStream): void {
+  private doHelp(response: ChatStream): void {
     response.markdown([
-      '**Available slash commands:**',
+      '**Available commands:**',
       '',
       '| Command | Description |',
       '|---------|-------------|',
-      '| `/clear`   | Clear conversation history |',
       '| `/fix`     | Fix the current file |',
       '| `/explain` | Explain the current file |',
-      '| `/index`   | Index project (V2) |',
+      '| `/index`   | Index project files |',
       '| `/help`    | Show this message |',
     ].join('\n'));
   }
@@ -278,7 +290,7 @@ export class ChatHandler {
   private async doFileAction(
     action: string,
     workspaceRoot: string,
-    response: vscode.ChatResponseStream,
+    response: ChatStream,
     token: vscode.CancellationToken,
   ): Promise<void> {
     const editor = vscode.window.activeTextEditor;
@@ -340,15 +352,6 @@ export class ChatHandler {
     this.state.yoloMode = !this.state.yoloMode;
     this.context.workspaceState.update('yoloMode', this.state.yoloMode);
     this.statusBar.setYolo(this.state.yoloMode);
-
-    if (this.state.yoloMode) {
-      vscode.window.showWarningMessage(
-        'YOLO Mode ON — Claude will skip all confirmation prompts.',
-        'Disable'
-      ).then(choice => {
-        if (choice === 'Disable') { this.toggleYolo(); }
-      });
-    }
   }
 
   addDroppedItems(items: DroppedItem[]): void {

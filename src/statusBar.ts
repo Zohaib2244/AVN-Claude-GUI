@@ -5,15 +5,11 @@ export type ClaudeStatus = 'idle' | 'thinking' | 'error';
 
 export class StatusBarManager implements vscode.Disposable {
   private statusItem: vscode.StatusBarItem;
-  private yoloItem: vscode.StatusBarItem;
-  private tokenItem: vscode.StatusBarItem;
-  private modelItem: vscode.StatusBarItem;
-  private budgetItem: vscode.StatusBarItem;
+  private tokenItem:  vscode.StatusBarItem;
   private spinnerFrames = ['⟳', '↻', '↺', '⟲'];
-  private spinnerIndex = 0;
+  private spinnerIndex  = 0;
   private spinnerTimer: NodeJS.Timeout | undefined;
   private status: ClaudeStatus = 'idle';
-  private yoloEnabled = false;
   private usageTracker: UsageTracker;
 
   constructor(usageTracker: UsageTracker) {
@@ -23,57 +19,25 @@ export class StatusBarManager implements vscode.Disposable {
     this.statusItem.command = 'claude.showOutput';
     this.statusItem.show();
 
-    this.yoloItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 101);
-    this.yoloItem.command = 'claude.toggleYolo';
-
     this.tokenItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
     this.tokenItem.command = 'claude.showUsage';
     this.tokenItem.show();
-
-    this.modelItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 103);
-    this.modelItem.command = 'claude.switchModel';
-    this.modelItem.show();
-
-    this.budgetItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 102);
-    this.budgetItem.command = 'claude.switchBudget';
 
     this.render();
   }
 
   setStatus(status: ClaudeStatus): void {
     this.status = status;
-    if (status === 'thinking') {
-      this.startSpinner();
-    } else {
-      this.stopSpinner();
-    }
+    if (status === 'thinking') { this.startSpinner(); } else { this.stopSpinner(); }
     this.render();
   }
 
-  setYolo(enabled: boolean): void {
-    this.yoloEnabled = enabled;
-    this.render();
-  }
+  refreshTokens(): void { this.render(); }
 
-  setModel(model: string): void {
-    const short = model.replace(/^claude-/, '').replace(/-\d+-\d+(-\d{8})?$/, '');
-    this.modelItem.text = `⚙ ${short}`;
-    this.modelItem.tooltip = `Model: ${model} — click to switch`;
-  }
-
-  setBudget(budget: string | undefined): void {
-    if (budget) {
-      this.budgetItem.text = `🧠 ${budget}`;
-      this.budgetItem.tooltip = `Thinking budget: ${budget} — click to change`;
-      this.budgetItem.show();
-    } else {
-      this.budgetItem.hide();
-    }
-  }
-
-  refreshTokens(): void {
-    this.render();
-  }
+  /** Kept for call-site compatibility — model/yolo/budget now live in the webview footer. */
+  setModel(_model: string): void {}
+  setYolo(_enabled: boolean): void {}
+  setBudget(_budget: string | undefined): void {}
 
   private startSpinner(): void {
     if (this.spinnerTimer) { return; }
@@ -84,28 +48,25 @@ export class StatusBarManager implements vscode.Disposable {
   }
 
   private stopSpinner(): void {
-    if (this.spinnerTimer) {
-      clearInterval(this.spinnerTimer);
-      this.spinnerTimer = undefined;
-    }
+    if (this.spinnerTimer) { clearInterval(this.spinnerTimer); this.spinnerTimer = undefined; }
     this.spinnerIndex = 0;
   }
 
   private renderStatus(): void {
     switch (this.status) {
       case 'idle':
-        this.statusItem.text = '● Claude';
-        this.statusItem.color = undefined;
+        this.statusItem.text    = '● Claude';
+        this.statusItem.color   = undefined;
         this.statusItem.tooltip = 'Claude — click to view debug output';
         break;
       case 'thinking':
-        this.statusItem.text = `${this.spinnerFrames[this.spinnerIndex]} Claude`;
-        this.statusItem.color = undefined;
+        this.statusItem.text    = `${this.spinnerFrames[this.spinnerIndex]} Claude`;
+        this.statusItem.color   = undefined;
         this.statusItem.tooltip = 'Claude is thinking…';
         break;
       case 'error':
-        this.statusItem.text = '✕ Claude';
-        this.statusItem.color = new vscode.ThemeColor('statusBarItem.errorForeground');
+        this.statusItem.text    = '✕ Claude';
+        this.statusItem.color   = new vscode.ThemeColor('statusBarItem.errorForeground');
         this.statusItem.tooltip = 'Claude — error (click for details)';
         break;
     }
@@ -113,33 +74,20 @@ export class StatusBarManager implements vscode.Disposable {
 
   private render(): void {
     this.renderStatus();
-
-    if (this.yoloEnabled) {
-      this.yoloItem.text = '⚡ YOLO';
-      this.yoloItem.color = new vscode.ThemeColor('statusBarItem.warningForeground');
-      this.yoloItem.tooltip = 'YOLO Mode ON — Claude skips confirmations. Click to disable.';
-      this.yoloItem.show();
-    } else {
-      this.yoloItem.hide();
-    }
-
     const daily = this.usageTracker.dailyTokens();
-    this.tokenItem.text = daily > 0 ? formatTokens(daily) : '0 tokens';
+    this.tokenItem.text    = daily > 0 ? formatTokens(daily) : '0 tok';
     this.tokenItem.tooltip = 'Daily token usage — click for details';
   }
 
   dispose(): void {
     this.stopSpinner();
     this.statusItem.dispose();
-    this.yoloItem.dispose();
     this.tokenItem.dispose();
-    this.modelItem.dispose();
-    this.budgetItem.dispose();
   }
 }
 
 function formatTokens(n: number): string {
-  if (n >= 1_000_000) { return `${(n / 1_000_000).toFixed(1)}M tokens`; }
-  if (n >= 1_000)     { return `${(n / 1_000).toFixed(1)}k tokens`; }
-  return `${n} tokens`;
+  if (n >= 1_000_000) { return `${(n / 1_000_000).toFixed(1)}M tok`; }
+  if (n >= 1_000)     { return `${(n / 1_000).toFixed(1)}k tok`; }
+  return `${n} tok`;
 }

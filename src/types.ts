@@ -1,3 +1,7 @@
+export interface ChatStream {
+  markdown(text: string): void;
+}
+
 export interface ClaudeStreamEvent {
   type: 'system' | 'assistant' | 'user' | 'result' | 'error';
   subtype?: string;

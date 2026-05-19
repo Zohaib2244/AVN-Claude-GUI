@@ -69,6 +69,12 @@ async function readDropped(item: DroppedItem): Promise<string | null> {
       const contents = await readFolderContents(item.uri, maxBytes);
       return `<context source="folder" path="${item.uri.fsPath}">\n${listing}\n\n${contents}\n</context>`;
     } else {
+      // Don't try to decode image/binary files as UTF-8 text
+      const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tiff', '.avif']);
+      const ext = path.extname(item.label).toLowerCase();
+      if (imageExts.has(ext)) {
+        return `<context source="image" path="${item.uri.fsPath}">Image file: ${item.label}</context>`;
+      }
       const bytes = await vscode.workspace.fs.readFile(item.uri);
       const text = Buffer.from(bytes).toString('utf8');
       return `<context source="file" path="${item.uri.fsPath}">\n${text}\n</context>`;
