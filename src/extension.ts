@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ProcessManager } from './processManager';
+import { OpenCodeManager } from './openCodeManager';
 import { StatusBarManager } from './statusBar';
 import { UsageTracker } from './usageTracker';
 import { ChatHandler } from './chatHandler';
@@ -20,11 +21,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const getWorkspaceRoot = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
   const processManager    = new ProcessManager();
+  const openCodeManager   = new OpenCodeManager();
   const usageTracker      = new UsageTracker(context);
   const statusBar         = new StatusBarManager(usageTracker);
-  const sessionManager = new SessionManager(context);
-  const chatHandler    = new ChatHandler(
+  const sessionManager    = new SessionManager(context);
+  const chatHandler       = new ChatHandler(
     processManager,
+    openCodeManager,
     statusBar,
     usageTracker,
     context,
@@ -135,7 +138,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   // ─── Disposables ────────────────────────────────────────────────────────────
-  context.subscriptions.push(processManager, statusBar);
+  context.subscriptions.push(processManager, openCodeManager, statusBar);
 }
 
 export function deactivate(): void { /* nothing */ }

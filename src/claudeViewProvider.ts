@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as cp from 'child_process';
 import { ChatHandler } from './chatHandler';
-import { ChatStream, ThinkingBudget, SymbolRef } from './types';
+import { ChatStream, ThinkingBudget, SymbolRef, BackendType } from './types';
 import { UsageTracker } from './usageTracker';
 import { DroppedItem, getActiveEditorContext } from './contextAssembler';
 import { SessionManager } from './sessionManager';
@@ -36,6 +36,7 @@ interface WebviewMessage {
   mcpName?: string;
   checkpointHash?: string;
   symbolName?: string;
+  backend?: string;
 }
 
 export class ClaudeViewProvider implements vscode.WebviewViewProvider {
@@ -112,14 +113,16 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     this._post({ type: 'updateSessions', sessions, activeId });
   }
 
-  private _fullState(root?: string) {
+  private _fullState() {
     const config = vscode.workspace.getConfiguration('claude');
     return {
-      type:            'setState',
-      model:           this.chatHandler.getModel(),
-      displayMode:     this.chatHandler.getDisplayMode(),
-      effort:          this.chatHandler.getEffort() ?? null,
-      availableModels: config.get<string[]>('models', []),
+      type:             'setState',
+      model:            this.chatHandler.getModel(),
+      displayMode:      this.chatHandler.getDisplayMode(),
+      effort:           this.chatHandler.getEffort() ?? null,
+      backend:          this.chatHandler.getBackend(),
+      availableModels:  config.get<string[]>('models', []),
+      openCodeModels:   config.get<string[]>('openCodeModels', []),
     };
   }
 
@@ -222,6 +225,20 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
           this.chatHandler.setDisplayMode(dm);
           this._post({ type: 'setState', displayMode: this.chatHandler.getDisplayMode() });
         }
+        break;
+      }
+
+      case 'selectBackend': {
+        const backend = msg.backend as BackendType | undefined;
+        if (!backend) { break; }
+        this.chatHandler.setBackend(backend);
+        // Auto-switch to the first model available for the new backend
+        const config = vscode.workspace.getConfiguration('claude');
+        const models = backend === 'opencode'
+          ? config.get<string[]>('openCodeModels', [])
+          : config.get<string[]>('models', []);
+        if (models.length) { this.chatHandler.setModelDirect(models[0]); }
+        this._post(this._fullState());
         break;
       }
 
@@ -728,7 +745,10 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
 
   <!-- Popup pickers: fixed-position, positioned by JS near their trigger buttons -->
   <div id="model-picker" hidden>
-    <div id="mp-title">Select Model</div>
+    <div id="mp-tabs">
+      <button class="mp-tab" data-backend="claude">Claude</button>
+      <button class="mp-tab" data-backend="opencode">OpenCode</button>
+    </div>
     <div id="mp-list"></div>
   </div>
   <div id="mode-picker" hidden>

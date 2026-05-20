@@ -1,22 +1,25 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { ProcessManager, isAuthError } from './processManager';
+import { OpenCodeManager } from './openCodeManager';
 import { StatusBarManager } from './statusBar';
 import { UsageTracker } from './usageTracker';
 import { assembleContext, getActiveEditorContext, DroppedItem } from './contextAssembler';
 import { SessionManager, ChatSession } from './sessionManager';
 import { ProjectIndexer } from './projectIndexer';
-import { ChatStream, ClaudeStreamEvent, ThinkingBudget, SymbolRef } from './types';
+import { ChatStream, ClaudeStreamEvent, ThinkingBudget, SymbolRef, BackendType } from './types';
 
 export interface SessionState {
-  activeSessionId: string | undefined;
-  claudeSessionId: string | undefined;  // the --resume ID for the CLI
-  model: string;
-  yoloMode: boolean;
-  thinkingBudget: ThinkingBudget | undefined;
-  droppedItems: DroppedItem[];
-  symbolRefs: SymbolRef[];
-  mode: 'agent' | 'plan';
+  activeSessionId:   string | undefined;
+  claudeSessionId:   string | undefined;
+  openCodeSessionId: string | undefined;
+  activeBackend:     BackendType;
+  model:             string;
+  yoloMode:          boolean;
+  thinkingBudget:    ThinkingBudget | undefined;
+  droppedItems:      DroppedItem[];
+  symbolRefs:        SymbolRef[];
+  mode:              'agent' | 'plan';
 }
 
 export class ChatHandler {
@@ -24,6 +27,7 @@ export class ChatHandler {
 
   constructor(
     private processManager: ProcessManager,
+    private openCodeManager: OpenCodeManager,
     private statusBar: StatusBarManager,
     private usageTracker: UsageTracker,
     private context: vscode.ExtensionContext,
@@ -33,14 +37,16 @@ export class ChatHandler {
     const ws     = context.workspaceState;
     const config = vscode.workspace.getConfiguration('claude');
     this.state = {
-      activeSessionId:  undefined,
-      claudeSessionId:  undefined,
-      model:            ws.get('selectedModel', config.get('defaultModel', 'claude-sonnet-4-5')),
-      yoloMode:         ws.get('yoloMode', false),
-      thinkingBudget:   ws.get('thinkingBudget', undefined),
-      droppedItems:     [],
-      symbolRefs:       [],
-      mode:             ws.get('mode', 'agent') as 'agent' | 'plan',
+      activeSessionId:   undefined,
+      claudeSessionId:   undefined,
+      openCodeSessionId: undefined,
+      activeBackend:     ws.get('activeBackend', 'claude') as BackendType,
+      model:             ws.get('selectedModel', config.get('defaultModel', 'claude-sonnet-4-5')),
+      yoloMode:          ws.get('yoloMode', false),
+      thinkingBudget:    ws.get('thinkingBudget', undefined),
+      droppedItems:      [],
+      symbolRefs:        [],
+      mode:              ws.get('mode', 'agent') as 'agent' | 'plan',
     };
     this.statusBar.setYolo(this.state.yoloMode);
     this.statusBar.setModel(this.state.model);
@@ -52,6 +58,7 @@ export class ChatHandler {
   getYolo():      boolean          { return this.state.yoloMode; }
   getMode():      'agent' | 'plan' { return this.state.mode; }
   getSessionId(): string | undefined { return this.state.claudeSessionId; }
+  getBackend():   BackendType      { return this.state.activeBackend; }
   getSessionManager(): SessionManager { return this.sessionManager; }
 
   getDisplayMode(): 'ask' | 'auto' | 'plan' {
@@ -107,6 +114,15 @@ export class ChatHandler {
     }
   }
 
+  setBackend(backend: BackendType): void {
+    this.state.activeBackend = backend;
+    this.context.workspaceState.update('activeBackend', backend);
+    const root = this.getWorkspaceRoot();
+    if (root && this.state.activeSessionId) {
+      this.sessionManager.update(root, this.state.activeSessionId, { backend });
+    }
+  }
+
   setEffort(level: ThinkingBudget | undefined): void {
     this.state.thinkingBudget = level;
     this.context.workspaceState.update('thinkingBudget', level);
@@ -121,11 +137,13 @@ export class ChatHandler {
   // ── Session management helpers (called by provider) ────────────────────────
   /** Load the active session from SessionManager (called once per workspace open). */
   private loadSession(root: string): void {
-    const s = this.sessionManager.ensureActive(root, this.state.model, this.state.mode);
-    this.state.activeSessionId  = s.id;
-    this.state.claudeSessionId  = s.claudeSessionId;
-    this.state.model            = s.model;
-    this.state.mode             = s.mode;
+    const s = this.sessionManager.ensureActive(root, this.state.model, this.state.mode, this.state.activeBackend);
+    this.state.activeSessionId   = s.id;
+    this.state.claudeSessionId   = s.claudeSessionId;
+    this.state.openCodeSessionId = s.openCodeSessionId;
+    this.state.model             = s.model;
+    this.state.mode              = s.mode;
+    this.state.activeBackend     = s.backend ?? 'claude';
     this.statusBar.setModel(this.state.model);
   }
 
@@ -135,28 +153,31 @@ export class ChatHandler {
     const target   = sessions.find(s => s.id === sessionId);
     if (!target) { return undefined; }
     this.sessionManager.setActive(root, target.id);
-    this.state.activeSessionId = target.id;
-    this.state.claudeSessionId = target.claudeSessionId;
-    this.state.model           = target.model;
-    this.state.mode            = target.mode;
+    this.state.activeSessionId   = target.id;
+    this.state.claudeSessionId   = target.claudeSessionId;
+    this.state.openCodeSessionId = target.openCodeSessionId;
+    this.state.model             = target.model;
+    this.state.mode              = target.mode;
+    this.state.activeBackend     = target.backend ?? 'claude';
     this.statusBar.setModel(this.state.model);
     return target;
   }
 
   /** Create a brand-new session and make it active. */
   createNewSession(root: string): ChatSession {
-    const s = this.sessionManager.create(root, undefined, this.state.model, this.state.mode);
-    this.state.activeSessionId = s.id;
-    this.state.claudeSessionId = undefined;
+    const s = this.sessionManager.create(root, undefined, this.state.model, this.state.mode, this.state.activeBackend);
+    this.state.activeSessionId   = s.id;
+    this.state.claudeSessionId   = undefined;
+    this.state.openCodeSessionId = undefined;
     return s;
   }
 
   /** Clear the current session context (called by the 'clear' command). */
   clearSession(root: string): void {
-    // Wipe the Claude CLI session ID so the next turn starts fresh
-    this.state.claudeSessionId = undefined;
+    this.state.claudeSessionId   = undefined;
+    this.state.openCodeSessionId = undefined;
     if (this.state.activeSessionId) {
-      this.sessionManager.update(root, this.state.activeSessionId, { claudeSessionId: undefined, preview: '' });
+      this.sessionManager.update(root, this.state.activeSessionId, { claudeSessionId: undefined, openCodeSessionId: undefined, preview: '' });
     }
   }
 
@@ -194,7 +215,74 @@ export class ChatHandler {
       });
     }
 
-    await this.runClaude(finalPrompt, workspaceRoot, response, token);
+    await this.runBackend(finalPrompt, workspaceRoot, response, token);
+  }
+
+  // ── Backend routing ────────────────────────────────────────────────────────
+  private async runBackend(
+    prompt: string,
+    workspaceRoot: string,
+    response: ChatStream,
+    token: vscode.CancellationToken,
+  ): Promise<void> {
+    if (this.state.activeBackend === 'opencode') {
+      await this.runOpenCode(prompt, workspaceRoot, response, token);
+    } else {
+      await this.runClaude(prompt, workspaceRoot, response, token);
+    }
+  }
+
+  // ── OpenCode invocation ────────────────────────────────────────────────────
+  private async runOpenCode(
+    prompt: string,
+    workspaceRoot: string,
+    response: ChatStream,
+    token: vscode.CancellationToken,
+  ): Promise<void> {
+    const abort = new AbortController();
+    token.onCancellationRequested(() => abort.abort());
+    this.statusBar.setStatus('thinking');
+
+    let inputTokens = 0, outputTokens = 0;
+
+    await new Promise<void>((resolve) => {
+      this.openCodeManager.invoke(prompt, {
+        model:        this.state.model,
+        sessionId:    this.state.openCodeSessionId,
+        workspaceRoot,
+        signal:       abort.signal,
+        onText:  (text)        => response.markdown(text),
+        onTool:  (name, input) => { if (response.progress) { response.progress(name, input); } },
+        onDone:  (sid, inp, out) => {
+          if (sid) { this.state.openCodeSessionId = sid; }
+          inputTokens  = inp;
+          outputTokens = out;
+          resolve();
+        },
+        onError: (err) => {
+          response.markdown(err.message === 'ENOENT'
+            ? '**OpenCode CLI not found.** Install from [opencode.ai](https://opencode.ai) and ensure it is on your PATH.'
+            : `**OpenCode error:** ${err.message}`);
+          this.statusBar.setStatus('error');
+          resolve();
+        },
+      });
+    });
+
+    if (response.done) {
+      response.done({ inputTokens, outputTokens, model: this.state.model });
+    }
+    this.statusBar.setStatus('idle');
+
+    if (inputTokens || outputTokens) {
+      this.usageTracker.record(inputTokens, outputTokens);
+      this.statusBar.refreshTokens();
+    }
+
+    const root = this.getWorkspaceRoot();
+    if (root && this.state.activeSessionId && this.state.openCodeSessionId) {
+      this.sessionManager.update(root, this.state.activeSessionId, { openCodeSessionId: this.state.openCodeSessionId });
+    }
   }
 
   // ── Claude invocation ──────────────────────────────────────────────────────

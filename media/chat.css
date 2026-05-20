@@ -475,7 +475,24 @@ body {
   box-shadow: 0 4px 24px rgba(0,0,0,.4);
 }
 #model-picker[hidden] { display: none; }
-#mp-title { padding: 8px 12px; font-size: 11px; font-weight: 600; opacity: .55; border-bottom: 1px solid var(--vscode-panel-border); position: sticky; top: 0; background: inherit; }
+
+/* Backend tab strip */
+#mp-tabs {
+  display: flex; border-bottom: 1px solid var(--vscode-panel-border);
+  position: sticky; top: 0; background: inherit; z-index: 1;
+}
+.mp-tab {
+  flex: 1; padding: 7px 0; font-size: 11px; font-weight: 600;
+  background: none; border: none; cursor: pointer;
+  color: var(--vscode-foreground); opacity: .45;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: opacity .12s, border-color .12s;
+  font-family: var(--vscode-font-family);
+}
+.mp-tab:hover  { opacity: .75; }
+.mp-tab.active { opacity: 1; border-bottom-color: var(--vscode-button-background); color: var(--vscode-button-background); }
+.mp-empty { padding: 14px 12px; font-size: 11px; opacity: .45; text-align: center; }
+
 .mp-item {
   display: flex; align-items: center; justify-content: space-between;
   width: 100%; padding: 8px 12px; text-align: left;

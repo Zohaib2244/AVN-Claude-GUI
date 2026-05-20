@@ -1,11 +1,14 @@
 import * as vscode from 'vscode';
+import { BackendType } from './types';
 
 export interface ChatSession {
   id: string;
   name: string;
-  claudeSessionId: string | undefined;
+  claudeSessionId:    string | undefined;
+  openCodeSessionId?: string | undefined;
   model: string;
   mode: 'agent' | 'plan';
+  backend?: BackendType;
   createdAt: number;
   updatedAt: number;
   preview: string;
@@ -46,15 +49,17 @@ export class SessionManager {
     this.ctx.workspaceState.update(this.ak(root), id);
   }
 
-  create(root: string, name?: string, model = 'claude-sonnet-4-6', mode: 'agent' | 'plan' = 'agent'): ChatSession {
+  create(root: string, name?: string, model = 'claude-sonnet-4-6', mode: 'agent' | 'plan' = 'agent', backend: BackendType = 'claude'): ChatSession {
     const all = this.list(root);
     const id  = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
     const session: ChatSession = {
       id,
-      name:            name ?? `Chat ${all.length + 1}`,
-      claudeSessionId: undefined,
+      name:               name ?? `Chat ${all.length + 1}`,
+      claudeSessionId:    undefined,
+      openCodeSessionId:  undefined,
       model,
       mode,
+      backend,
       createdAt: Date.now(),
       updatedAt: Date.now(),
       preview:   '',
@@ -89,7 +94,7 @@ export class SessionManager {
   }
 
   /** Return the active session, creating a default one if none exist yet. */
-  ensureActive(root: string, model: string, mode: 'agent' | 'plan'): ChatSession {
-    return this.active(root) ?? this.create(root, 'New Chat', model, mode);
+  ensureActive(root: string, model: string, mode: 'agent' | 'plan', backend: BackendType = 'claude'): ChatSession {
+    return this.active(root) ?? this.create(root, 'New Chat', model, mode, backend);
   }
 }

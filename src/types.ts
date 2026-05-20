@@ -50,6 +50,8 @@ export interface ConversationTurn {
 
 export type ThinkingBudget = 'low' | 'medium' | 'high' | 'max';
 
+export type BackendType = 'claude' | 'opencode';
+
 export interface SymbolRef {
   name: string;
   filePath: string;

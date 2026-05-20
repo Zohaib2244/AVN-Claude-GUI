@@ -9,7 +9,9 @@
   let currentEl          = null;
   let currentRaw         = '';
   let attachments        = [];
-  let availableModels    = [];
+  let availableModels         = [];   // Claude models
+  let availableOpenCodeModels = [];   // OpenCode models
+  let currentBackend          = 'claude';
   let atMentionStart     = -1;
   let fpMode             = 'none';
   let fpHighIdx          = -1;
@@ -422,14 +424,51 @@
   }
   function closeModelPicker() { modelPicker.hidden=true; modelBtn.classList.remove('open'); }
   function toggleModelPicker(){ modelPicker.hidden ? openModelPicker() : closeModelPicker(); }
+  function updateBackendTabs() {
+    document.querySelectorAll('.mp-tab').forEach(function(tab) {
+      tab.classList.toggle('active', tab.dataset.backend === currentBackend);
+    });
+    // Hide Extended Thinking rows when on OpenCode (no --effort support)
+    var thinkRow = document.querySelector('.mode-thinking-row');
+    var effortRow = document.getElementById('effort-row');
+    var isOC = currentBackend === 'opencode';
+    if (thinkRow)  { thinkRow.style.display  = isOC ? 'none' : ''; }
+    if (effortRow) { effortRow.style.display = isOC ? 'none' : ''; }
+  }
+
   function buildModelList() {
-    mpList.innerHTML=''; var cur=modelBtn.dataset.model||'';
-    availableModels.forEach(function(m) {
-      var btn=document.createElement('button'); btn.className='mp-item'+(m===cur?' current':'');
-      var lbl=document.createElement('span'); lbl.textContent=m; btn.appendChild(lbl);
-      if(m===cur){var b=document.createElement('span');b.className='mp-badge';b.textContent='current';btn.appendChild(b);}
-      btn.addEventListener('click',function(){post('selectModel',{model:m});closeModelPicker();});
+    mpList.innerHTML = '';
+    var cur    = modelBtn.dataset.model || '';
+    var models = currentBackend === 'opencode' ? availableOpenCodeModels : availableModels;
+    if (!models.length) {
+      var empty = document.createElement('div'); empty.className = 'mp-empty';
+      empty.textContent = currentBackend === 'opencode'
+        ? 'No OpenCode models configured. Add to "claude.openCodeModels" in settings.'
+        : 'No models configured.';
+      mpList.appendChild(empty);
+      return;
+    }
+    models.forEach(function(m) {
+      var btn = document.createElement('button'); btn.className = 'mp-item' + (m === cur ? ' current' : '');
+      var lbl = document.createElement('span'); lbl.textContent = m; btn.appendChild(lbl);
+      if (m === cur) { var b = document.createElement('span'); b.className = 'mp-badge'; b.textContent = 'current'; btn.appendChild(b); }
+      btn.addEventListener('click', function() { post('selectModel', { model: m }); closeModelPicker(); });
       mpList.appendChild(btn);
+    });
+  }
+
+  // Backend tab click
+  var mpTabsEl = document.getElementById('mp-tabs');
+  if (mpTabsEl) {
+    mpTabsEl.addEventListener('click', function(e) {
+      var tab = e.target.closest('.mp-tab');
+      if (!tab || !tab.dataset.backend) { return; }
+      var backend = tab.dataset.backend;
+      if (backend === currentBackend) { return; }
+      currentBackend = backend;
+      updateBackendTabs();
+      buildModelList();
+      post('selectBackend', { backend: backend });
     });
   }
   document.addEventListener('click', function(e) {
@@ -707,14 +746,30 @@
     switch(msg.type){
 
       case 'setState':
-        if(msg.model!==undefined){var short=msg.model.replace(/^claude-/,'').replace(/-\d{8}$/,'');modelBtn.textContent=short;modelBtn.title=msg.model+' — click to switch';modelBtn.dataset.model=msg.model;}
-        if(msg.displayMode!==undefined){updateDisplayModeUI(msg.displayMode);}
-        if('effort' in msg){
-          thinkingEnabled=!!msg.effort;
-          if(msg.effort){currentEffort=msg.effort;}
+        if (msg.backend !== undefined) {
+          currentBackend = msg.backend;
+          updateBackendTabs();
+        }
+        if (msg.model !== undefined) {
+          var short;
+          if (currentBackend === 'opencode') {
+            // "anthropic/claude-sonnet-4-6" → "claude-sonnet-4-6"
+            short = msg.model.includes('/') ? msg.model.split('/').slice(1).join('/') : msg.model;
+          } else {
+            short = msg.model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+          }
+          modelBtn.textContent = short;
+          modelBtn.title = msg.model + ' — click to switch';
+          modelBtn.dataset.model = msg.model;
+        }
+        if (msg.displayMode !== undefined) { updateDisplayModeUI(msg.displayMode); }
+        if ('effort' in msg) {
+          thinkingEnabled = !!msg.effort;
+          if (msg.effort) { currentEffort = msg.effort; }
           updateEffortDots(null); updateThinkingUI();
         }
-        if(msg.availableModels&&msg.availableModels.length){availableModels=msg.availableModels;}
+        if (msg.availableModels && msg.availableModels.length) { availableModels = msg.availableModels; }
+        if (msg.openCodeModels && msg.openCodeModels.length)   { availableOpenCodeModels = msg.openCodeModels; }
         break;
 
       case 'addUserMessage': appendUserMsg(msg.text); break;
