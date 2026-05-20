@@ -1,6 +1,6 @@
 # AVN Chat
 
-A standalone VS Code sidebar chat powered by the **Claude Code CLI**. Replaces the default Copilot Chat with a fully custom panel — sessions, file context, live progress, checkpoint restore, and more.
+A custom standalone VS Code sidebar chat powered by the **Claude Code CLI**.
 
 ---
 
