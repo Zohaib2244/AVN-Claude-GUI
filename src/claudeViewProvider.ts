@@ -229,24 +229,49 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
       }
 
       case 'addOpenCodeModel': {
-        const input = await vscode.window.showInputBox({
-          prompt:        'Enter OpenCode model ID',
-          placeHolder:   'e.g. anthropic/claude-sonnet-4-6  or  openai/gpt-4o',
-          ignoreFocusOut: true,
-          validateInput: (v) => {
-            if (!v.trim())          { return 'Model ID cannot be empty'; }
-            if (!v.includes('/'))   { return 'Use provider/model format — e.g. anthropic/claude-sonnet-4-6'; }
-            return null;
-          },
-        });
-        if (!input?.trim()) { break; }
-        const ocConfig = vscode.workspace.getConfiguration('claude');
-        const ocModels = [...ocConfig.get<string[]>('openCodeModels', [])];
-        const trimmed  = input.trim();
-        if (!ocModels.includes(trimmed)) {
-          ocModels.push(trimmed);
-          await ocConfig.update('openCodeModels', ocModels, vscode.ConfigurationTarget.Global);
+        const ocCfg     = vscode.workspace.getConfiguration('claude');
+        const existingSet = new Set(ocCfg.get<string[]>('openCodeModels', []));
+
+        // Try to fetch models from the OpenCode CLI (shows free ones)
+        const fetched = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: 'Fetching OpenCode models…', cancellable: false },
+          () => this._fetchOpenCodeModels(),
+        );
+
+        if (fetched.length > 0) {
+          // Multi-select QuickPick — free models pre-selected, already-added ones excluded
+          const items = fetched.map(m => ({
+            label:       m.fullId,
+            description: m.free ? '$(star-full) free' : '',
+            detail:      m.contextK > 0 ? `${m.contextK}k context` : undefined,
+            picked:      m.free && !existingSet.has(m.fullId),
+          }));
+          const picks = await vscode.window.showQuickPick(items, {
+            canPickMany:  true,
+            placeHolder:  'Select models to add — free ones pre-selected  (Space to toggle)',
+            title:        'OpenCode Models',
+            matchOnDescription: true,
+          });
+          if (!picks?.length) { break; }
+          picks.forEach(p => existingSet.add(p.label));
+          await ocCfg.update('openCodeModels', [...existingSet], vscode.ConfigurationTarget.Global);
+        } else {
+          // CLI not available or returned nothing — fall back to manual input
+          const input = await vscode.window.showInputBox({
+            prompt:         'Enter OpenCode model ID  (opencode CLI not found or returned no models)',
+            placeHolder:    'e.g. anthropic/claude-haiku-4-5  or  openai/gpt-4o',
+            ignoreFocusOut: true,
+            validateInput:  (v) => {
+              if (!v.trim())        { return 'Model ID cannot be empty'; }
+              if (!v.includes('/')) { return 'Use provider/model format — e.g. anthropic/claude-sonnet-4-6'; }
+              return null;
+            },
+          });
+          if (!input?.trim()) { break; }
+          existingSet.add(input.trim());
+          await ocCfg.update('openCodeModels', [...existingSet], vscode.ConfigurationTarget.Global);
         }
+
         this._post(this._fullState());
         break;
       }
@@ -602,6 +627,58 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     settings.mcpServers = servers;
     this._writeClaudeSettings(settings);
     vscode.window.showInformationMessage(`MCP "${name}" added. Restart the session to apply.`);
+  }
+
+  private _fetchOpenCodeModels(): Promise<Array<{ fullId: string; free: boolean; contextK: number }>> {
+    return new Promise(resolve => {
+      const cwd = this.getWorkspaceRoot() ?? process.cwd();
+      cp.exec('opencode models --verbose', { timeout: 20_000, cwd }, (err, stdout) => {
+        if (err || !stdout.trim()) { resolve([]); return; }
+
+        const results: Array<{ fullId: string; free: boolean; contextK: number }> = [];
+        const lines     = stdout.split('\n');
+        let currentId   = '';
+        let jsonBuf: string[] = [];
+        let depth       = 0;
+
+        const flush = () => {
+          if (!currentId || !jsonBuf.length) { return; }
+          try {
+            const obj = JSON.parse(jsonBuf.join('\n')) as {
+              cost?:  { input?: number; output?: number };
+              limit?: { context?: number };
+            };
+            const free     = (obj.cost?.input  ?? 1) === 0 && (obj.cost?.output ?? 1) === 0;
+            const contextK = Math.round((obj.limit?.context ?? 0) / 1000);
+            results.push({ fullId: currentId, free, contextK });
+          } catch { /* skip malformed */ }
+          currentId = ''; jsonBuf = []; depth = 0;
+        };
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          // A model-ID line looks like "anthropic/claude-sonnet-4-6" — no spaces, has a /
+          if (depth === 0 && /^[a-z0-9_-]+\/[a-z0-9._:@-]+$/i.test(trimmed)) {
+            flush();
+            currentId = trimmed;
+          } else if (currentId) {
+            jsonBuf.push(line);
+            depth += (line.match(/\{/g) ?? []).length;
+            depth -= (line.match(/\}/g) ?? []).length;
+            if (depth <= 0 && jsonBuf.length > 1) { flush(); }
+          }
+        }
+        flush();
+
+        // Free models first, then alphabetical
+        results.sort((a, b) => {
+          if (a.free !== b.free) { return a.free ? -1 : 1; }
+          return a.fullId.localeCompare(b.fullId);
+        });
+
+        resolve(results);
+      });
+    });
   }
 
   private async _gitHash(cwd: string): Promise<string | undefined> {
