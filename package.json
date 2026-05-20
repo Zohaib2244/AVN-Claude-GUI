@@ -111,15 +111,8 @@
         },
         "claude.openCodeModels": {
           "type": "array",
-          "default": [
-            "anthropic/claude-sonnet-4-6",
-            "anthropic/claude-opus-4-7",
-            "openai/gpt-4o",
-            "openai/o3",
-            "gemini/gemini-2.5-pro",
-            "deepseek/deepseek-chat"
-          ],
-          "description": "Available OpenCode models (format: provider/model)"
+          "default": [],
+          "description": "Available OpenCode models (format: provider/model). Add from the model picker in AVN Chat."
         }
       }
     }

@@ -228,6 +228,38 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      case 'addOpenCodeModel': {
+        const input = await vscode.window.showInputBox({
+          prompt:        'Enter OpenCode model ID',
+          placeHolder:   'e.g. anthropic/claude-sonnet-4-6  or  openai/gpt-4o',
+          ignoreFocusOut: true,
+          validateInput: (v) => {
+            if (!v.trim())          { return 'Model ID cannot be empty'; }
+            if (!v.includes('/'))   { return 'Use provider/model format — e.g. anthropic/claude-sonnet-4-6'; }
+            return null;
+          },
+        });
+        if (!input?.trim()) { break; }
+        const ocConfig = vscode.workspace.getConfiguration('claude');
+        const ocModels = [...ocConfig.get<string[]>('openCodeModels', [])];
+        const trimmed  = input.trim();
+        if (!ocModels.includes(trimmed)) {
+          ocModels.push(trimmed);
+          await ocConfig.update('openCodeModels', ocModels, vscode.ConfigurationTarget.Global);
+        }
+        this._post(this._fullState());
+        break;
+      }
+
+      case 'removeOpenCodeModel': {
+        if (!msg.model) { break; }
+        const rmConfig = vscode.workspace.getConfiguration('claude');
+        const rmModels = rmConfig.get<string[]>('openCodeModels', []).filter(m => m !== msg.model);
+        await rmConfig.update('openCodeModels', rmModels, vscode.ConfigurationTarget.Global);
+        this._post(this._fullState());
+        break;
+      }
+
       case 'selectBackend': {
         const backend = msg.backend as BackendType | undefined;
         if (!backend) { break; }
@@ -750,6 +782,9 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
       <button class="mp-tab" data-backend="opencode">OpenCode</button>
     </div>
     <div id="mp-list"></div>
+    <div id="mp-footer" hidden>
+      <button id="mp-add-btn">+ Add model</button>
+    </div>
   </div>
   <div id="mode-picker" hidden>
     <div class="mp2-header">

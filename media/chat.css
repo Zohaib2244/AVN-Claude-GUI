@@ -493,6 +493,31 @@ body {
 .mp-tab.active { opacity: 1; border-bottom-color: var(--vscode-button-background); color: var(--vscode-button-background); }
 .mp-empty { padding: 14px 12px; font-size: 11px; opacity: .45; text-align: center; }
 
+/* Add-model footer (OpenCode tab only) */
+#mp-footer {
+  border-top: 1px solid var(--vscode-panel-border);
+  padding: 6px 10px;
+  position: sticky; bottom: 0; background: inherit;
+}
+#mp-footer[hidden] { display: none; }
+#mp-add-btn {
+  width: 100%; padding: 5px 0; font-size: 11px; font-weight: 600;
+  background: none; border: 1px dashed var(--vscode-panel-border);
+  border-radius: 6px; cursor: pointer; color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-font-family); transition: border-color .12s, color .12s;
+}
+#mp-add-btn:hover { border-color: var(--vscode-focusBorder); color: var(--vscode-foreground); }
+
+/* Remove (×) button on OpenCode model items */
+.mp-item-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-item-rm {
+  background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1;
+  opacity: 0; color: var(--vscode-foreground); padding: 0 2px; flex-shrink: 0;
+  transition: opacity .12s, color .12s;
+}
+.mp-item:hover .mp-item-rm { opacity: .45; }
+.mp-item-rm:hover { opacity: 1 !important; color: var(--vscode-errorForeground); }
+
 .mp-item {
   display: flex; align-items: center; justify-content: space-between;
   width: 100%; padding: 8px 12px; text-align: left;

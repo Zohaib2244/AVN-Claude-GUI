@@ -436,26 +436,42 @@
     if (effortRow) { effortRow.style.display = isOC ? 'none' : ''; }
   }
 
+  var mpFooter = document.getElementById('mp-footer');
+  var mpAddBtn = document.getElementById('mp-add-btn');
+
   function buildModelList() {
     mpList.innerHTML = '';
+    var isOC   = currentBackend === 'opencode';
     var cur    = modelBtn.dataset.model || '';
-    var models = currentBackend === 'opencode' ? availableOpenCodeModels : availableModels;
+    var models = isOC ? availableOpenCodeModels : availableModels;
+
+    // Show/hide footer add button for OpenCode tab
+    if (mpFooter) { mpFooter.hidden = !isOC; }
+
     if (!models.length) {
       var empty = document.createElement('div'); empty.className = 'mp-empty';
-      empty.textContent = currentBackend === 'opencode'
-        ? 'No OpenCode models configured. Add to "claude.openCodeModels" in settings.'
-        : 'No models configured.';
+      empty.textContent = isOC ? 'No models added yet. Click "+ Add model" below.' : 'No models configured.';
       mpList.appendChild(empty);
       return;
     }
     models.forEach(function(m) {
       var btn = document.createElement('button'); btn.className = 'mp-item' + (m === cur ? ' current' : '');
-      var lbl = document.createElement('span'); lbl.textContent = m; btn.appendChild(lbl);
+      var lbl = document.createElement('span'); lbl.className = 'mp-item-label'; lbl.textContent = m; btn.appendChild(lbl);
       if (m === cur) { var b = document.createElement('span'); b.className = 'mp-badge'; b.textContent = 'current'; btn.appendChild(b); }
       btn.addEventListener('click', function() { post('selectModel', { model: m }); closeModelPicker(); });
+      // × remove button for OpenCode models
+      if (isOC) {
+        var rm = document.createElement('button'); rm.className = 'mp-item-rm'; rm.textContent = '×'; rm.title = 'Remove';
+        (function(model) {
+          rm.addEventListener('click', function(e) { e.stopPropagation(); post('removeOpenCodeModel', { model: model }); });
+        })(m);
+        btn.appendChild(rm);
+      }
       mpList.appendChild(btn);
     });
   }
+
+  if (mpAddBtn) { mpAddBtn.addEventListener('click', function() { post('addOpenCodeModel'); }); }
 
   // Backend tab click
   var mpTabsEl = document.getElementById('mp-tabs');
