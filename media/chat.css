@@ -91,6 +91,57 @@ body {
 .msg-body pre  { background: var(--vscode-textBlockQuote-background); border: 1px solid var(--vscode-panel-border); border-radius: 5px; padding: 10px 12px; overflow-x: auto; margin: 6px 0; }
 .msg-body pre code { background: none; padding: 0; font-family: var(--vscode-editor-font-family, monospace); font-size: var(--vscode-editor-font-size, 13px); border-radius: 0; }
 .code-lang { display: block; font-size: 10px; opacity: .4; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .5px; }
+/* ── Live progress (tool calls during streaming) ── */
+.msg-progress { margin-bottom: 4px; }
+.msg-progress[hidden] { display: none; }
+.progress-live { display: flex; flex-direction: column; gap: 1px; }
+.progress-item {
+  font-size: 10px; opacity: .45; padding: 1px 0;
+  display: flex; align-items: center; gap: 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.progress-item::before {
+  content: ''; display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--vscode-button-background); opacity: .5; flex-shrink: 0;
+}
+.progress-item.active::before { background: var(--vscode-charts-yellow, #cca700); animation: pulse .8s ease-in-out infinite; }
+
+/* ── Collapsed progress summary ── */
+.msg-progress-summary { margin-bottom: 6px; }
+.msg-progress-summary summary {
+  cursor: pointer; font-size: 10px; opacity: .45; list-style: none;
+  display: flex; align-items: center; gap: 4px; padding: 1px 0; user-select: none;
+}
+.msg-progress-summary summary::-webkit-details-marker { display: none; }
+.msg-progress-summary summary::before { content: '▸'; font-size: 9px; transition: transform .15s; flex-shrink: 0; }
+.msg-progress-summary[open] summary::before { transform: rotate(90deg); }
+.msg-progress-summary summary:hover { opacity: .7; }
+.progress-detail-item {
+  font-size: 10px; opacity: .38; padding: 1px 0 1px 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ── Checkpoint restore button ── */
+.msg-restore-btn {
+  display: inline-block; opacity: 0; margin-top: 4px;
+  font-size: 10px; padding: 1px 7px; border-radius: 5px; cursor: pointer;
+  background: none; border: 1px solid var(--vscode-panel-border);
+  color: var(--vscode-descriptionForeground);
+  transition: opacity .2s, border-color .12s, color .12s;
+  font-family: var(--vscode-font-family);
+}
+.msg.assistant:hover .msg-restore-btn { opacity: .45; }
+.msg-restore-btn:hover { opacity: 1 !important; border-color: var(--vscode-charts-orange, #e8a87c); color: var(--vscode-charts-orange, #e8a87c); }
+
+/* ── Response metadata (hover to reveal) ── */
+.msg-meta {
+  font-size: 10px; opacity: 0; margin-top: 5px;
+  color: var(--vscode-descriptionForeground);
+  transition: opacity .2s; letter-spacing: .1px;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+.msg.assistant:hover .msg-meta { opacity: .45; }
+
 .typing-dots { display: flex; gap: 4px; align-items: center; height: 20px; }
 .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--vscode-foreground); opacity: .35; animation: bounce 1.2s ease-in-out infinite; }
 .dot:nth-child(2){animation-delay:.2s} .dot:nth-child(3){animation-delay:.4s}
@@ -99,16 +150,18 @@ body {
 @keyframes msgIn      { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
 @keyframes slideDown  { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:none} }
 @keyframes slideUp2   { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
-@keyframes chipPop    { from{opacity:0;transform:scale(.7)} to{opacity:1;transform:scale(1)} }
+@keyframes chipPop    { from{opacity:0;transform:scale(.93)} to{opacity:1;transform:scale(1)} }
 @keyframes fadeIn     { from{opacity:0} to{opacity:1} }
 @keyframes spSlide    { from{opacity:0;transform:translateY(-10px) scale(.98)} to{opacity:1;transform:none} }
 
 .msg                              { animation: msgIn .2s ease forwards; }
 #cmd-picker:not([hidden]),
-#file-picker:not([hidden])        { animation: slideDown .15s ease forwards; }
-#model-picker:not([hidden])       { animation: slideUp2 .15s ease forwards; }
+#file-picker:not([hidden]),
+#model-picker:not([hidden]),
+#mode-picker:not([hidden])        { animation: popIn .12s ease forwards; }
+@keyframes popIn { from{opacity:0;transform:scale(.97) translateY(4px)} to{opacity:1;transform:none} }
 #sessions-panel:not([hidden])     { animation: spSlide .2s cubic-bezier(.34,1.2,.64,1) forwards; }
-.tb-chip                          { animation: chipPop .2s cubic-bezier(.34,1.56,.64,1) forwards; }
+.tb-chip.chip-new                 { animation: chipPop .16s ease-out forwards; }
 #send-btn                         { transition: transform .1s, background .15s; }
 #send-btn:active:not(:disabled)   { transform: scale(.88); }
 .mp-item, .cp-item, .fp-item,
@@ -195,10 +248,12 @@ body {
 
 /* ── Commands picker ── */
 #cmd-picker {
-  flex-shrink: 0;
+  position: fixed; z-index: 1000;
+  width: 260px; max-height: 300px; overflow-y: auto;
   background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-  border-top: 1px solid var(--vscode-panel-border);
-  overflow-y: auto; max-height: 240px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0,0,0,.4);
 }
 #cmd-picker[hidden] { display: none; }
 .cp-group { border-bottom: 1px solid var(--vscode-panel-border); }
@@ -215,10 +270,13 @@ body {
 
 /* ── File picker ── */
 #file-picker {
-  flex-shrink: 0;
+  position: fixed; z-index: 1000;
+  width: 280px; max-height: 300px;
+  display: flex; flex-direction: column;
   background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-  border-top: 1px solid var(--vscode-panel-border);
-  display: flex; flex-direction: column; max-height: 220px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0,0,0,.4);
 }
 #file-picker[hidden] { display: none; }
 #fp-header {
@@ -247,64 +305,38 @@ body {
 .fp-icon       { font-size: 12px; flex-shrink: 0; opacity: .65; width: 14px; text-align: center; }
 .fp-name       { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fp-relpath    { font-size: 10px; opacity: .4; flex-shrink: 0; white-space: nowrap; }
-.fp-item.fp-hi { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.fp-item.fp-hi    { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.fp-item.fp-added { opacity: .4; cursor: default; }
+.fp-item.fp-added:hover { background: none; }
+.fp-added-tag { font-size: 9px; opacity: .7; margin-left: 6px; font-style: italic; }
 .fp-empty      { padding: 14px 12px; font-size: 11px; opacity: .45; text-align: center; }
 
 /* Hide search input in @-mention mode (textarea drives the search) */
 #file-picker.at-mode #fp-search { display: none; }
 
-/* ── Floating input card ── */
+/* ── Floating input card (3 separated regions) ── */
 #input-card {
-  margin: 0 8px 6px;
+  margin: 0 6px 6px;
   border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
   border-radius: 12px;
   background: var(--vscode-input-background);
   flex-shrink: 0;
-  transition: border-color .15s;
+  overflow: hidden;
 }
 #input-card:focus-within { border-color: var(--vscode-focusBorder); }
 
-/* Context line inside card */
-#ctx-line {
-  display: flex; align-items: center; gap: 6px;
-  padding: 5px 12px 0;
-  font-size: 10px; color: var(--vscode-descriptionForeground);
+/* TOP: chips + context */
+#input-top {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border);
 }
+#input-top[hidden] { display: none; }
+#ctx-line { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--vscode-descriptionForeground); }
 #ctx-line[hidden] { display: none; }
-#ctx-dismiss-btn  { background: none; border: none; cursor: pointer; font-size: 12px; opacity: .5; color: inherit; padding: 0; }
+#ctx-dismiss-btn { background: none; border: none; cursor: pointer; font-size: 12px; opacity: .5; color: inherit; padding: 0; }
 #ctx-dismiss-btn:hover { opacity: 1; }
-
-/* Textarea row */
-#input-main {
-  display: flex; align-items: flex-start; gap: 6px;
-  padding: 10px 12px 4px;
-}
-#user-input {
-  flex: 1; background: none; border: none; outline: none;
-  resize: none; min-height: 22px; max-height: 120px;
-  font-family: var(--vscode-font-family); font-size: var(--vscode-font-size);
-  color: var(--vscode-input-foreground); line-height: 1.5;
-}
-#user-input::placeholder { color: var(--vscode-input-placeholderForeground); }
-#mic-btn { background: none; border: none; cursor: pointer; padding: 3px; opacity: .45; flex-shrink: 0; color: var(--vscode-foreground); display: flex; align-items: center; }
-#mic-btn:hover { opacity: .8; }
-
-/* Toolbar */
-#input-toolbar {
-  display: flex; align-items: center; gap: 4px;
-  padding: 4px 8px 8px;
-}
-#add-btn, #cmd-btn {
-  background: none; border: 1px solid var(--vscode-panel-border); border-radius: 6px;
-  cursor: pointer; color: var(--vscode-foreground); padding: 3px 8px;
-  font-size: 13px; font-weight: 500; opacity: .65; flex-shrink: 0; line-height: 1.4;
-}
-#add-btn:hover, #cmd-btn:hover { opacity: 1; background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
-#cmd-btn { font-family: var(--vscode-editor-font-family, monospace); }
-
-/* Chips inside toolbar */
-#tb-chips { display: flex; gap: 4px; flex: 1; overflow-x: auto; overflow-y: hidden; min-width: 0; }
-#tb-chips::-webkit-scrollbar { height: 0; }
+#tb-chips { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; min-width: 0; }
 .tb-chip {
   display: flex; align-items: center; gap: 4px; flex-shrink: 0;
   font-size: 11px; padding: 2px 6px 2px 8px;
@@ -315,36 +347,108 @@ body {
 .tb-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-chip-rm { background: none; border: none; cursor: pointer; font-size: 13px; opacity: .5; padding: 0; color: inherit; line-height: 1; flex-shrink: 0; }
 .tb-chip-rm:hover { opacity: 1; color: var(--vscode-errorForeground); }
-
-/* Image chips */
-.tb-chip-img {
-  max-width: 180px; padding: 2px 6px 2px 4px;
-  background: var(--vscode-textBlockQuote-background);
-}
+.tb-chip-img { max-width: 180px; padding: 2px 6px 2px 4px; background: var(--vscode-textBlockQuote-background); }
 .tb-chip-thumb { width: 28px; height: 20px; object-fit: cover; border-radius: 3px; flex-shrink: 0; }
 .tb-chip-info  { display: flex; flex-direction: column; min-width: 0; }
 .tb-chip-iname { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-chip-dim   { font-size: 9px; opacity: .5; }
 
-/* Send button */
+/* MIDDLE: textarea */
+#input-middle { padding: 10px 12px 6px; }
+#user-input {
+  width: 100%; background: none; border: none; outline: none; display: block;
+  resize: none; min-height: 22px; max-height: 160px; overflow-y: auto;
+  font-family: var(--vscode-font-family); font-size: var(--vscode-font-size);
+  color: var(--vscode-input-foreground); line-height: 1.5;
+  scrollbar-width: thin;
+}
+#user-input::placeholder { color: var(--vscode-input-placeholderForeground); }
+
+/* BOTTOM: action bar */
+#input-bottom {
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 8px 8px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+.btn-spacer { flex: 1; }
+
+/* Current file — chip style in top bar */
+#cur-file-btn {
+  display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+  height: 22px; padding: 1px 8px 1px 6px; font-size: 11px;
+  border: 1px solid var(--vscode-panel-border); border-radius: 6px;
+  background: var(--vscode-badge-background, var(--vscode-textBlockQuote-background));
+  color: var(--vscode-descriptionForeground); cursor: pointer;
+  max-width: 140px; transition: all .12s; font-family: var(--vscode-font-family);
+}
+#cur-file-btn[hidden] { display: none; }
+#cur-file-btn svg { flex-shrink: 0; opacity: .5; }
+#cur-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#cur-file-btn:hover { border-color: var(--vscode-focusBorder); color: var(--vscode-foreground); }
+#cur-file-btn.included {
+  border-color: var(--vscode-button-background);
+  color: var(--vscode-button-background);
+  background: color-mix(in srgb, var(--vscode-button-background) 12%, transparent);
+}
+#cur-file-btn.included svg { opacity: 1; }
+
+/* Tools button */
+#tools-btn {
+  background: none; border: 1px solid var(--vscode-panel-border); border-radius: 8px;
+  cursor: pointer; color: var(--vscode-foreground);
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  opacity: .65; flex-shrink: 0;
+}
+#tools-btn:hover, #tools-btn.open { opacity: 1; background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
+
+#add-btn, #cmd-btn {
+  background: none; border: 1px solid var(--vscode-panel-border); border-radius: 8px;
+  cursor: pointer; color: var(--vscode-foreground);
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 500; opacity: .65; flex-shrink: 0;
+}
+#add-btn:hover, #cmd-btn:hover { opacity: 1; background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
+#cmd-btn { font-family: var(--vscode-editor-font-family, monospace); }
+
+#model-btn {
+  height: 26px; padding: 0 8px; font-size: 11px;
+  border: 1px solid var(--vscode-panel-border); border-radius: 8px;
+  background: none; color: var(--vscode-foreground); cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+#model-btn:hover, #model-btn.open { border-color: var(--vscode-focusBorder); background: var(--vscode-button-secondaryBackground); }
+
+#display-mode-btn {
+  height: 26px; padding: 0 8px; font-size: 11px;
+  border: 1px solid var(--vscode-panel-border); border-radius: 8px;
+  background: none; color: var(--vscode-foreground); cursor: pointer;
+  display: flex; align-items: center; font-family: var(--vscode-font-family);
+}
+#display-mode-btn:hover, #display-mode-btn.open { border-color: var(--vscode-focusBorder); background: var(--vscode-button-secondaryBackground); }
+.dm-opt { display: none; align-items: center; gap: 5px; }
+.dm-opt.active { display: flex; }
+.dm-opt svg { flex-shrink: 0; opacity: .75; }
+
+#mic-btn { background: none; border: none; cursor: pointer; padding: 3px; opacity: .45; flex-shrink: 0; color: var(--vscode-foreground); display: flex; align-items: center; }
+#mic-btn:hover { opacity: .8; }
+
 #send-btn {
   background: var(--vscode-button-background); color: var(--vscode-button-foreground);
-  border: none; border-radius: 8px; width: 28px; height: 28px; cursor: pointer;
+  border: none; border-radius: 8px; width: 26px; height: 26px; cursor: pointer;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0; padding: 0;
 }
 #send-btn:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
 #send-btn:disabled { opacity: .35; cursor: not-allowed; }
 
-/* ── Bottom wrap: model picker + footer ── */
-#bottom-wrap { position: relative; flex-shrink: 0; }
-
+/* ── Popup pickers (fixed position, small cards near trigger button) ── */
 #model-picker {
-  position: absolute; bottom: 100%; left: 0; right: 0; z-index: 30;
+  position: fixed; z-index: 1000;
+  width: 260px; max-height: 280px; overflow-y: auto;
   background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
   border: 1px solid var(--vscode-panel-border);
-  border-radius: 8px 8px 0 0;
-  box-shadow: 0 -6px 20px rgba(0,0,0,.25);
-  max-height: 280px; overflow-y: auto;
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0,0,0,.4);
 }
 #model-picker[hidden] { display: none; }
 #mp-title { padding: 8px 12px; font-size: 11px; font-weight: 600; opacity: .55; border-bottom: 1px solid var(--vscode-panel-border); position: sticky; top: 0; background: inherit; }
@@ -360,20 +464,126 @@ body {
 .mp-item.current { color: var(--vscode-button-background); }
 .mp-badge { font-size: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 8px; }
 
-/* ── Footer ── */
-#footer { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-top: 1px solid var(--vscode-panel-border); }
-#model-btn {
-  font-size: 11px; padding: 2px 8px;
-  border: 1px solid var(--vscode-panel-border); border-radius: 12px;
-  background: none; color: var(--vscode-foreground); cursor: pointer;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px;
-  font-family: var(--vscode-editor-font-family, monospace);
+/* ── Mode picker ── */
+#mode-picker {
+  position: fixed; z-index: 1000;
+  width: 280px; overflow: hidden;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0,0,0,.4);
 }
-#model-btn:hover, #model-btn.open { border-color: var(--vscode-focusBorder); background: var(--vscode-button-secondaryBackground); }
-#mode-toggle { display: flex; border: 1px solid var(--vscode-panel-border); border-radius: 12px; padding: 1px; overflow: hidden; }
-.mode-btn { font-size: 11px; padding: 2px 9px; background: none; border: none; cursor: pointer; border-radius: 10px; color: var(--vscode-descriptionForeground); }
-.mode-btn.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-.mode-btn:not(.active):hover { color: var(--vscode-foreground); }
-#yolo-btn { font-size: 11px; padding: 2px 8px; margin-left: auto; border: 1px solid var(--vscode-panel-border); border-radius: 12px; background: none; color: var(--vscode-descriptionForeground); cursor: pointer; }
-#yolo-btn.on { border-color: var(--vscode-charts-yellow, #cca700); color: var(--vscode-charts-yellow, #cca700); }
-#yolo-btn:hover { border-color: var(--vscode-focusBorder); }
+#mode-picker[hidden] { display: none; }
+.mp2-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border);
+}
+.mp2-title { font-size: 11px; font-weight: 600; opacity: .55; }
+.mp2-hint  { font-size: 10px; opacity: .3; }
+.mode-item {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; padding: 10px 14px; text-align: left;
+  background: none; border: none; border-bottom: 1px solid var(--vscode-panel-border);
+  cursor: pointer; color: var(--vscode-foreground);
+}
+.mode-item:last-of-type { border-bottom: none; }
+.mode-item:hover { background: var(--vscode-list-hoverBackground); }
+.mode-item.current { background: color-mix(in srgb, var(--vscode-list-activeSelectionBackground) 50%, transparent); }
+.mode-item-icon { flex-shrink: 0; opacity: .7; display: flex; align-items: center; }
+.mode-item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mode-item-name { font-size: 12px; font-weight: 600; text-align: left; }
+.mode-item-desc { font-size: 10px; opacity: .5; line-height: 1.4; text-align: left; }
+.mode-item-check { font-size: 13px; opacity: 0; color: var(--vscode-button-background); flex-shrink: 0; }
+.mode-item.current .mode-item-check { opacity: 1; }
+
+/* ── Thinking toggle row ── */
+.mode-thinking-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+.thinking-toggle {
+  width: 32px; height: 18px; border-radius: 9px; border: none; cursor: pointer; padding: 0;
+  background: var(--vscode-scrollbarSlider-background); position: relative; transition: background .15s; flex-shrink: 0;
+}
+.thinking-toggle.on { background: var(--vscode-button-background); }
+.thinking-toggle-knob {
+  width: 14px; height: 14px; border-radius: 50%; background: #fff;
+  position: absolute; top: 2px; left: 2px; transition: transform .15s;
+  box-shadow: 0 1px 3px rgba(0,0,0,.3);
+}
+.thinking-toggle.on .thinking-toggle-knob { transform: translateX(14px); }
+
+/* ── Effort row ── */
+.mode-effort-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--vscode-panel-border);
+  transition: opacity .15s;
+}
+.mode-effort-row.thinking-off { opacity: .3; pointer-events: none; }
+.mode-effort-label { font-size: 12px; font-weight: 600; flex: 1; }
+#effort-level-text { font-size: 11px; opacity: .45; }
+#effort-dots { display: flex; align-items: center; gap: 5px; }
+.effort-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: none; border: 1.5px solid var(--vscode-panel-border);
+  cursor: pointer; padding: 0; flex-shrink: 0;
+  transition: background .12s, border-color .12s;
+}
+.effort-dot.active { background: var(--vscode-button-background); border-color: var(--vscode-button-background); }
+.effort-dot:hover:not(.active) { border-color: var(--vscode-focusBorder); }
+
+/* ── Tools / MCP panel ── */
+#tools-panel {
+  position: fixed; z-index: 1000;
+  width: 300px; max-height: 380px;
+  display: flex; flex-direction: column;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0,0,0,.4);
+}
+#tools-panel[hidden] { display: none; }
+#tools-panel:not([hidden]) { animation: popIn .12s ease forwards; }
+.tp-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid var(--vscode-panel-border); flex-shrink: 0;
+}
+.tp-title { font-size: 12px; font-weight: 600; opacity: .7; }
+#tp-close { background: none; border: none; cursor: pointer; font-size: 16px; opacity: .5; color: inherit; padding: 0; }
+#tp-close:hover { opacity: 1; }
+#tp-list { flex: 1; overflow-y: auto; }
+.tp-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; border-bottom: 1px solid var(--vscode-panel-border);
+}
+.tp-item:last-child { border-bottom: none; }
+.tp-item-info { flex: 1; min-width: 0; }
+.tp-item-name { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-item-cmd  { font-size: 10px; opacity: .45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family, monospace); }
+.tp-toggle {
+  width: 28px; height: 16px; border-radius: 8px; border: none; cursor: pointer; padding: 0; flex-shrink: 0;
+  background: var(--vscode-scrollbarSlider-background); position: relative; transition: background .15s;
+}
+.tp-toggle.on { background: var(--vscode-button-background); }
+.tp-toggle-knob {
+  width: 12px; height: 12px; border-radius: 50%; background: #fff;
+  position: absolute; top: 2px; left: 2px; transition: transform .15s;
+  box-shadow: 0 1px 2px rgba(0,0,0,.3);
+}
+.tp-toggle.on .tp-toggle-knob { transform: translateX(12px); }
+.tp-del { background: none; border: none; cursor: pointer; font-size: 15px; opacity: .4; color: inherit; padding: 0 2px; }
+.tp-del:hover { opacity: 1; color: var(--vscode-errorForeground); }
+.tp-empty { padding: 20px 14px; font-size: 11px; opacity: .4; text-align: center; }
+.tp-footer {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; border-top: 1px solid var(--vscode-panel-border); flex-shrink: 0;
+}
+#tp-add-btn {
+  font-size: 11px; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+  background: var(--vscode-button-background); color: var(--vscode-button-foreground);
+  border: none;
+}
+#tp-add-btn:hover { background: var(--vscode-button-hoverBackground); }
+.tp-hint { font-size: 10px; opacity: .35; flex: 1; text-align: right; }

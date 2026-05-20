@@ -1,6 +1,6 @@
 {
   "name": "avn-claude-gui",
-  "displayName": "Claude Code Assistant",
+  "displayName": "AVN Chat",
   "description": "Standalone sidebar chat powered by the Claude Code CLI",
   "version": "0.2.0",
   "publisher": "personal",
@@ -16,7 +16,7 @@
       "activitybar": [
         {
           "id": "claude-sidebar",
-          "title": "Claude",
+          "title": "AVN Chat",
           "icon": "media/claude-icon.svg"
         }
       ]
@@ -28,7 +28,7 @@
           "id": "claude.chatView",
           "name": "Chat",
           "icon": "media/claude-icon.svg",
-          "contextualTitle": "Claude Code Assistant"
+          "contextualTitle": "AVN Chat"
         }
       ]
     },
@@ -63,7 +63,7 @@
       }
     ],
     "configuration": {
-      "title": "Claude Code Assistant",
+      "title": "AVN Chat",
       "properties": {
         "claude.models": {
           "type": "array",

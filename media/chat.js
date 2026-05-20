@@ -5,16 +5,23 @@
   const ICON_BASE = (document.querySelector('meta[name="icon-base"]') || { getAttribute: function(){ return ''; } }).getAttribute('content') || '';
 
   // ── State ────────────────────────────────────────────────────────────────
-  let streaming       = false;
-  let currentEl       = null;
-  let currentRaw      = '';
-  let attachments     = [];
-  let availableModels = [];
-  let atMentionStart  = -1;
-  let fpMode          = 'none';
-  let fpHighIdx       = -1;
-  let cpHighIdx       = -1;
-  let fpSearchTimer   = null;
+  let streaming          = false;
+  let currentEl          = null;
+  let currentRaw         = '';
+  let attachments        = [];
+  let availableModels    = [];
+  let atMentionStart     = -1;
+  let fpMode             = 'none';
+  let fpHighIdx          = -1;
+  let cpHighIdx          = -1;
+  let fpSearchTimer      = null;
+  let currentDisplayMode  = 'auto';
+  let currentEffort       = 'high'; // effort level (low/medium/high), separate from on/off
+  let progressItems       = [];
+  let progressEl          = null;
+  let currentFile         = null;   // { name, uri }
+  let currentFileIncluded = false;
+  let thinkingEnabled     = false;
 
   // ── DOM ──────────────────────────────────────────────────────────────────
   const messagesEl   = document.getElementById('messages');
@@ -22,9 +29,16 @@
   const inputEl      = document.getElementById('user-input');
   const sendBtn      = document.getElementById('send-btn');
   const statusDot    = document.getElementById('status-dot');
-  const modelBtn     = document.getElementById('model-btn');
-  const modeBtns     = document.querySelectorAll('.mode-btn');
-  const yoloBtn      = document.getElementById('yolo-btn');
+  const modelBtn        = document.getElementById('model-btn');
+  const displayModeBtn  = document.getElementById('display-mode-btn');
+  const modePicker      = document.getElementById('mode-picker');
+  const curFileBtn        = document.getElementById('cur-file-btn');
+  const curFileNameEl     = document.getElementById('cur-file-name');
+  const toolsBtn          = document.getElementById('tools-btn');
+  const toolsPanel        = document.getElementById('tools-panel');
+  const thinkingToggleBtn = document.getElementById('thinking-toggle');
+  const effortRowEl       = document.getElementById('effort-row');
+  const inputTop     = document.getElementById('input-top');
   const ctxLine      = document.getElementById('ctx-line');
   const ctxTextEl    = document.getElementById('ctx-text-inner');
   const dropOverlay  = document.getElementById('drop-overlay');
@@ -45,6 +59,79 @@
   function scrollBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
   function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function fmtTok(n) { if (n>=1e6){return (n/1e6).toFixed(1)+'M';} if(n>=1e3){return (n/1e3).toFixed(1)+'k';} return String(n); }
+  function refreshInputTop() { inputTop.hidden = ctxLine.hidden && attachments.length === 0 && currentFile === null; }
+
+  function updateCurrentFileBtn() {
+    if (!currentFile) { curFileBtn.hidden = true; return; }
+    curFileBtn.hidden = false;
+    curFileNameEl.textContent = currentFile.name;
+    curFileBtn.classList.toggle('included', currentFileIncluded);
+    curFileBtn.title = (currentFileIncluded ? 'Exclude ' : 'Include ') + currentFile.name + ' as context';
+  }
+
+  curFileBtn.addEventListener('click', function() {
+    if (!currentFile) { return; }
+    currentFileIncluded = !currentFileIncluded;
+    updateCurrentFileBtn();
+  });
+
+  // ── Clear all references (Escape) ─────────────────────────────────────────
+  function clearAllReferences() {
+    if (attachments.length > 0) { post('clearAttachments'); clearAttachments(); }
+    if (!ctxLine.hidden) { ctxLine.hidden = true; }
+    if (currentFileIncluded) { currentFileIncluded = false; updateCurrentFileBtn(); }
+    refreshInputTop();
+  }
+
+  // ── Thinking toggle ────────────────────────────────────────────────────────
+  function updateThinkingUI() {
+    if (thinkingToggleBtn) { thinkingToggleBtn.classList.toggle('on', thinkingEnabled); }
+    if (effortRowEl) { effortRowEl.classList.toggle('thinking-off', !thinkingEnabled); }
+    var txt = document.getElementById('effort-level-text');
+    if (txt) { txt.textContent = thinkingEnabled ? '(' + currentEffort.charAt(0).toUpperCase() + currentEffort.slice(1) + ')' : ''; }
+  }
+  if (thinkingToggleBtn) {
+    thinkingToggleBtn.addEventListener('click', function() {
+      thinkingEnabled = !thinkingEnabled;
+      post('setEffort', { effort: thinkingEnabled ? currentEffort : null });
+      updateThinkingUI();
+    });
+  }
+
+  // ── Tools / MCP panel ─────────────────────────────────────────────────────
+  function openToolsPanel() {
+    var rect = toolsBtn.getBoundingClientRect();
+    _positionPicker(toolsPanel, rect, 300);
+    toolsPanel.hidden = false; toolsBtn.classList.add('open');
+    closeModelPicker(); closeModePicker(); closeCmdPicker(); closeFilePicker(false);
+    post('getMCPs');
+  }
+  function closeToolsPanel() { toolsPanel.hidden = true; toolsBtn.classList.remove('open'); }
+  function toggleToolsPanel() { toolsPanel.hidden ? openToolsPanel() : closeToolsPanel(); }
+  if (toolsBtn)  { toolsBtn.addEventListener('click', toggleToolsPanel); }
+  var tpClose  = document.getElementById('tp-close');   if (tpClose)  { tpClose.addEventListener('click', closeToolsPanel); }
+  var tpAddBtn = document.getElementById('tp-add-btn'); if (tpAddBtn) { tpAddBtn.addEventListener('click', function(){ post('addMCP'); }); }
+
+  function describeToolUse(name, input) {
+    var i = input || {};
+    var fp = i.file_path || i.path || '';
+    switch (name) {
+      case 'Read':      return 'Reading '      + fp;
+      case 'Write':     return 'Writing '      + fp;
+      case 'Edit':      return 'Editing '      + fp;
+      case 'MultiEdit': return 'Editing '      + fp;
+      case 'Bash':      return 'Running: '     + String(i.command || '').slice(0, 70);
+      case 'Grep':      return 'Searching for ' + (i.pattern || i.regex || i.query || '');
+      case 'Glob':      return 'Listing '      + (i.pattern || '');
+      case 'LS':        return 'Listing '      + (i.path || '');
+      case 'WebFetch':  return 'Fetching '     + (i.url || '');
+      case 'WebSearch': return 'Web search: '  + (i.query || '');
+      case 'TodoWrite': return 'Updating todos';
+      case 'TodoRead':  return 'Reading todos';
+      case 'Agent':     return 'Spawning agent' + (i.description ? ': ' + String(i.description).slice(0, 40) : '');
+      default:          return name + (fp ? ': ' + fp : '');
+    }
+  }
   function timeSince(ts) {
     var d = Date.now() - ts, m = Math.floor(d/60000), h = Math.floor(d/3600000), day = Math.floor(d/86400000);
     if (m<1)   { return 'just now'; }
@@ -85,18 +172,19 @@
   document.getElementById('sessions-btn').addEventListener('click',    function(){ toggleSessionsPanel(); });
   document.getElementById('usage-close').addEventListener('click',     function(){ usagePanel.hidden = true; });
   document.getElementById('fp-close').addEventListener('click',        function(){ closeFilePicker(true); });
-  document.getElementById('ctx-dismiss-btn').addEventListener('click', function(){ ctxLine.hidden = true; });
+  document.getElementById('ctx-dismiss-btn').addEventListener('click', function(){ ctxLine.hidden = true; refreshInputTop(); });
   document.getElementById('add-btn').addEventListener('click',         function(){ openFilePicker_plus(); });
   document.getElementById('cmd-btn').addEventListener('click',         function(){ toggleCmdPicker(); });
   document.getElementById('send-btn').addEventListener('click',        function(){ handleSend(); });
   document.getElementById('model-btn').addEventListener('click',       function(){ toggleModelPicker(); });
+  document.getElementById('display-mode-btn').addEventListener('click', function(){ toggleModePicker(); });
   document.getElementById('sp-new').addEventListener('click',          function(){ post('createSession'); });
   document.getElementById('sp-close').addEventListener('click',        function(){ sessionsPanel.hidden = true; });
 
   // ── Input resize ──────────────────────────────────────────────────────────
   inputEl.addEventListener('input', function () {
     inputEl.style.height = 'auto';
-    inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
     refreshSendBtn();
     checkAtMention();
   });
@@ -118,8 +206,39 @@
       return;
     }
     if (!modelPicker.hidden && e.key === 'Escape') { closeModelPicker(); return; }
+    if (!modePicker.hidden  && e.key === 'Escape') { closeModePicker();  return; }
     if (!sessionsPanel.hidden && e.key === 'Escape') { sessionsPanel.hidden = true; return; }
+    if (e.key === 'Escape') { clearAllReferences(); return; }
     if (e.key === '/' && inputEl.value.trim() === '') { e.preventDefault(); openCmdPicker(); return; }
+
+    // ── Auto-continue numbered lists and blockquotes on Shift+Enter ─────────
+    if (e.key === 'Enter' && e.shiftKey) {
+      var val = inputEl.value, pos = inputEl.selectionStart, sel = inputEl.selectionEnd;
+      var lineStart = val.lastIndexOf('\n', pos - 1) + 1;
+      var currentLine = val.slice(lineStart, pos);
+      var numMatch   = currentLine.match(/^(\d+)\. ([\s\S]*)$/);
+      var quoteMatch = !numMatch && currentLine.match(/^> ([\s\S]*)$/);
+      if (numMatch || quoteMatch) {
+        e.preventDefault();
+        var content = numMatch ? numMatch[2] : quoteMatch[1];
+        if (content === '') {
+          // Empty list item — exit the format, remove the prefix
+          inputEl.value = val.slice(0, lineStart) + val.slice(sel);
+          inputEl.setSelectionRange(lineStart, lineStart);
+        } else {
+          var prefix = numMatch ? (parseInt(numMatch[1], 10) + 1) + '. ' : '> ';
+          var ins = '\n' + prefix;
+          inputEl.value = val.slice(0, pos) + ins + val.slice(sel);
+          var np = pos + ins.length;
+          inputEl.setSelectionRange(np, np);
+        }
+        inputEl.style.height = 'auto';
+        inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
+        refreshSendBtn();
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   });
 
@@ -156,24 +275,39 @@
     if (raw.startsWith('/')) { var sp = raw.indexOf(' '); command = sp===-1?raw.slice(1):raw.slice(1,sp); text=sp===-1?'':raw.slice(sp+1).trim(); }
     appendUserMsg(raw);
     inputEl.value = ''; inputEl.style.height = 'auto';
-    ctxLine.hidden = true;
+    ctxLine.hidden = true; refreshInputTop();
     closeFilePicker(false); closeCmdPicker(); closeModelPicker();
     refreshSendBtn();
-    post('send', { text: text, command: command });
+    var sendPayload = { text: text, command: command };
+    if (currentFileIncluded && currentFile) { sendPayload.currentFileRef = currentFile.uri; }
+    post('send', sendPayload);
   }
 
   function clearConversation() { closeCmdPicker(); closeModelPicker(); post('send', { text: '', command: 'clear' }); }
 
   // ── File picker ───────────────────────────────────────────────────────────
+  function _positionPicker(el, anchorRect, w) {
+    var left = anchorRect.left;
+    if (left + w > window.innerWidth - 8) { left = window.innerWidth - w - 8; }
+    if (left < 8) { left = 8; }
+    el.style.left = left + 'px'; el.style.right = 'auto';
+    el.style.bottom = (window.innerHeight - anchorRect.top + 6) + 'px'; el.style.top = 'auto';
+  }
   function openFilePicker_at() {
     fpMode = 'at'; fpHighIdx = -1;
-    filePicker.classList.add('at-mode'); filePicker.hidden = false;
-    closeCmdPicker(); closeModelPicker();
+    filePicker.classList.add('at-mode');
+    var rect = document.getElementById('input-card').getBoundingClientRect();
+    _positionPicker(filePicker, rect, 280);
+    filePicker.hidden = false;
+    closeCmdPicker(); closeModelPicker(); closeModePicker();
   }
   function openFilePicker_plus() {
     fpMode = 'plus'; fpHighIdx = -1; atMentionStart = -1;
-    filePicker.classList.remove('at-mode'); filePicker.hidden = false;
-    fpSearch.value = ''; closeCmdPicker(); closeModelPicker();
+    filePicker.classList.remove('at-mode');
+    var rect = document.getElementById('add-btn').getBoundingClientRect();
+    _positionPicker(filePicker, rect, 280);
+    filePicker.hidden = false;
+    fpSearch.value = ''; closeCmdPicker(); closeModelPicker(); closeModePicker();
     fpSearch.focus(); triggerSearch('');
   }
   function closeFilePicker(removeAt) {
@@ -201,16 +335,28 @@
     if (t) { t.click(); }
   }
   function renderFileResults(files) {
-    fpHighIdx = -1; fpResults.innerHTML = '';
-    if (!files || !files.length) { var e2=document.createElement('div');e2.className='fp-empty';e2.textContent='No files found';fpResults.appendChild(e2);return; }
-    files.forEach(function(f) {
-      var btn = document.createElement('button'); btn.className = 'fp-item';
+    fpResults.innerHTML = '';
+    if (!files || !files.length) { fpHighIdx=-1; var e2=document.createElement('div');e2.className='fp-empty';e2.textContent='No files found';fpResults.appendChild(e2);return; }
+    // Track which URIs are already attached (for greying out)
+    var addedUris = new Set(attachments.map(function(a) { return a.uri || ''; }));
+    // Also grey out the current file if it's included
+    if (currentFileIncluded && currentFile) { addedUris.add(currentFile.uri || ''); }
+    fpHighIdx = -1;
+    files.forEach(function(f, idx) {
+      var alreadyAdded = addedUris.has(f.uri || '');
+      var cls = 'fp-item' + (alreadyAdded ? ' fp-added' : '');
+      // Auto-highlight first non-added item
+      if (!alreadyAdded && fpHighIdx === -1) { fpHighIdx = idx; cls += ' fp-hi'; }
+      var btn = document.createElement('button'); btn.className = cls;
       var left = document.createElement('div'); left.className = 'fp-item-left';
       left.appendChild(makeIcon(f.name, f.isFolder));
       var name = document.createElement('span'); name.className = 'fp-name'; name.textContent = f.name; left.appendChild(name);
       var rel  = document.createElement('span'); rel.className = 'fp-relpath'; rel.textContent = f.relPath || '';
+      if (alreadyAdded) {
+        var tag = document.createElement('span'); tag.className = 'fp-added-tag'; tag.textContent = 'added'; rel.appendChild(tag);
+      }
       btn.appendChild(left); btn.appendChild(rel);
-      btn.addEventListener('click', function() { selectFile(f); });
+      if (!alreadyAdded) { btn.addEventListener('click', function() { selectFile(f); }); }
       fpResults.appendChild(btn);
     });
   }
@@ -225,7 +371,18 @@
   }
 
   // ── Commands picker ───────────────────────────────────────────────────────
-  function openCmdPicker()  { cpHighIdx=-1; cmdPicker.querySelectorAll('.cp-item').forEach(function(el){el.classList.remove('cp-hi');}); cmdPicker.hidden=false; closeFilePicker(false); closeModelPicker(); }
+  function openCmdPicker() {
+    var items=cmdPicker.querySelectorAll('.cp-item');
+    cpHighIdx=items.length>0?0:-1;
+    items.forEach(function(el,i){el.classList.toggle('cp-hi',i===0);});
+    var rect=document.getElementById('cmd-btn').getBoundingClientRect();
+    var pickerW=260; var left=rect.left;
+    if(left+pickerW>window.innerWidth-8){left=window.innerWidth-pickerW-8;}
+    if(left<8){left=8;}
+    cmdPicker.style.left=left+'px'; cmdPicker.style.right='auto';
+    cmdPicker.style.bottom=(window.innerHeight-rect.top+6)+'px'; cmdPicker.style.top='auto';
+    cmdPicker.hidden=false; closeFilePicker(false); closeModelPicker(); closeModePicker();
+  }
   function closeCmdPicker() { cmdPicker.hidden=true; cpHighIdx=-1; }
   function toggleCmdPicker(){ cmdPicker.hidden ? openCmdPicker() : closeCmdPicker(); }
   function moveCpHighlight(delta) {
@@ -233,7 +390,7 @@
     cpHighIdx=cpHighIdx<0?(delta>0?0:items.length-1):Math.max(0,Math.min(items.length-1,cpHighIdx+delta));
     items.forEach(function(el,i){el.classList.toggle('cp-hi',i===cpHighIdx);if(i===cpHighIdx){el.scrollIntoView({block:'nearest'});}});
   }
-  function selectCpHighlighted() { var t=cpHighIdx>=0?cmdPicker.querySelectorAll('.cp-item')[cpHighIdx]:null; if(t){t.click();} }
+  function selectCpHighlighted() { var items=cmdPicker.querySelectorAll('.cp-item'); var t=items[cpHighIdx>=0?cpHighIdx:0]; if(t){t.click();} }
   cmdPicker.addEventListener('click', function(e) {
     var item = e.target.closest('.cp-item'); if(!item){return;}
     var cmd=item.dataset.cmd; closeCmdPicker(); inputEl.value=''; inputEl.style.height='auto'; refreshSendBtn();
@@ -241,7 +398,20 @@
   });
 
   // ── Model picker ──────────────────────────────────────────────────────────
-  function openModelPicker()  { buildModelList(); modelPicker.hidden=false; modelBtn.classList.add('open'); closeCmdPicker(); closeFilePicker(false); }
+  function openModelPicker() {
+    buildModelList();
+    var rect = modelBtn.getBoundingClientRect();
+    var pickerW = 260;
+    var left = rect.left;
+    if (left + pickerW > window.innerWidth - 8) { left = window.innerWidth - pickerW - 8; }
+    if (left < 8) { left = 8; }
+    modelPicker.style.left   = left + 'px';
+    modelPicker.style.right  = 'auto';
+    modelPicker.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
+    modelPicker.style.top    = 'auto';
+    modelPicker.hidden = false; modelBtn.classList.add('open');
+    closeCmdPicker(); closeFilePicker(false); closeModePicker();
+  }
   function closeModelPicker() { modelPicker.hidden=true; modelBtn.classList.remove('open'); }
   function toggleModelPicker(){ modelPicker.hidden ? openModelPicker() : closeModelPicker(); }
   function buildModelList() {
@@ -255,8 +425,11 @@
     });
   }
   document.addEventListener('click', function(e) {
-    var bw=document.getElementById('bottom-wrap');
-    if(!modelPicker.hidden && bw && !bw.contains(e.target)){closeModelPicker();}
+    if(!modelPicker.hidden && !modelPicker.contains(e.target) && !modelBtn.contains(e.target)){closeModelPicker();}
+    if(!modePicker.hidden  && !modePicker.contains(e.target)  && !displayModeBtn.contains(e.target)){closeModePicker();}
+    if(!cmdPicker.hidden   && !cmdPicker.contains(e.target)   && e.target.id!=='cmd-btn'){closeCmdPicker();}
+    if(!filePicker.hidden  && !filePicker.contains(e.target)  && e.target.id!=='add-btn' && !inputEl.contains(e.target)){closeFilePicker(fpMode==='at');}
+    if(!toolsPanel.hidden  && !toolsPanel.contains(e.target)  && !toolsBtn.contains(e.target)){closeToolsPanel();}
   });
 
   // ── Sessions panel ────────────────────────────────────────────────────────
@@ -322,11 +495,52 @@
     input.addEventListener('blur', commit);
   }
 
-  // ── Mode / YOLO ───────────────────────────────────────────────────────────
-  modeBtns.forEach(function(btn) {
-    btn.addEventListener('click', function(){ var mode=btn.dataset.mode; modeBtns.forEach(function(b){b.classList.toggle('active',b.dataset.mode===mode);}); post('setMode',{mode:mode}); });
+  // ── Mode picker ───────────────────────────────────────────────────────────
+  function openModePicker() {
+    var rect = displayModeBtn.getBoundingClientRect();
+    var pickerW = 280;
+    var left = rect.left;
+    if (left + pickerW > window.innerWidth - 8) { left = window.innerWidth - pickerW - 8; }
+    if (left < 8) { left = 8; }
+    modePicker.style.left   = left + 'px';
+    modePicker.style.right  = 'auto';
+    modePicker.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
+    modePicker.style.top    = 'auto';
+    modePicker.hidden = false; displayModeBtn.classList.add('open');
+    closeModelPicker(); closeCmdPicker(); closeFilePicker(false);
+  }
+  function closeModePicker() { modePicker.hidden=true; displayModeBtn.classList.remove('open'); }
+  function toggleModePicker(){ modePicker.hidden ? openModePicker() : closeModePicker(); }
+
+  function updateDisplayModeUI(dm) {
+    currentDisplayMode = dm;
+    document.querySelectorAll('.dm-opt').forEach(function(el){ el.classList.toggle('active', el.dataset.dm === dm); });
+    document.querySelectorAll('.mode-item').forEach(function(el){ el.classList.toggle('current', el.dataset.displayMode === dm); });
+  }
+
+  function updateEffortDots(level) {
+    if (level) { currentEffort = level; }
+    var order = { low: 1, medium: 2, high: 3 };
+    var n = order[currentEffort] || 3;
+    document.querySelectorAll('.effort-dot').forEach(function(dot, idx){ dot.classList.toggle('active', idx < n); });
+    updateThinkingUI();
+  }
+
+  modePicker.addEventListener('click', function(e) {
+    var item = e.target.closest('.mode-item');
+    if (item && item.dataset.displayMode) {
+      post('selectMode', { displayMode: item.dataset.displayMode });
+      updateDisplayModeUI(item.dataset.displayMode);
+      closeModePicker();
+      return;
+    }
+    var dot = e.target.closest('.effort-dot');
+    if (dot && dot.dataset.level) {
+      currentEffort = dot.dataset.level;
+      if (thinkingEnabled) { post('setEffort', { effort: dot.dataset.level }); }
+      updateEffortDots(dot.dataset.level);
+    }
   });
-  yoloBtn.addEventListener('click', function(){ post('toggleYolo'); });
 
   // ── Drag & drop ───────────────────────────────────────────────────────────
   var dragCounter = 0;
@@ -339,32 +553,54 @@
     if(u.trim()){post('drop',{uriList:u});}
   });
 
-  // ── Attachment chips ──────────────────────────────────────────────────────
-  function updateChips() {
-    tbChips.innerHTML='';
-    attachments.forEach(function(att,idx){
-      var chip=document.createElement('div');
-      if(att.dataUrl){
-        chip.className='tb-chip tb-chip-img';
-        var thumb=document.createElement('img');thumb.className='tb-chip-thumb';thumb.src=att.dataUrl;thumb.alt=att.name;
-        var info=document.createElement('div');info.className='tb-chip-info';
-        var iname=document.createElement('span');iname.className='tb-chip-iname';iname.title=att.name;iname.textContent=att.name;info.appendChild(iname);
-        if(att.width&&att.height){var dim=document.createElement('span');dim.className='tb-chip-dim';dim.textContent=att.width+'×'+att.height;info.appendChild(dim);}
-        chip.appendChild(thumb);chip.appendChild(info);
-      } else {
-        chip.className='tb-chip';
-        var ns=document.createElement('span');ns.className='tb-chip-name';ns.title=att.name;
-        var iconEl=makeIcon(att.name, att.isFolder);iconEl.style.marginRight='4px';
-        ns.prepend(iconEl); ns.append(att.name);
-        chip.appendChild(ns);
-      }
-      var rm=document.createElement('button');rm.className='tb-chip-rm';rm.title='Remove';rm.textContent='×';
-      (function(i,uri){rm.addEventListener('click',function(){removeAttachment(i,uri);});})(idx,att.uri);
-      chip.appendChild(rm);tbChips.appendChild(chip);
-    });
+  // ── Attachment chips (incremental — only animates newly added chips) ────────
+  function _buildChip(att) {
+    var chip = document.createElement('div');
+    chip.dataset.chipUri = att.uri || '';
+    if (att.dataUrl) {
+      chip.className = 'tb-chip tb-chip-img chip-new';
+      var thumb = document.createElement('img'); thumb.className = 'tb-chip-thumb'; thumb.src = att.dataUrl; thumb.alt = att.name;
+      var info = document.createElement('div'); info.className = 'tb-chip-info';
+      var iname = document.createElement('span'); iname.className = 'tb-chip-iname'; iname.title = att.name; iname.textContent = att.name; info.appendChild(iname);
+      if (att.width && att.height) { var dim = document.createElement('span'); dim.className = 'tb-chip-dim'; dim.textContent = att.width + '×' + att.height; info.appendChild(dim); }
+      chip.appendChild(thumb); chip.appendChild(info);
+    } else {
+      chip.className = 'tb-chip chip-new';
+      var ns = document.createElement('span'); ns.className = 'tb-chip-name'; ns.title = att.name;
+      var iconEl = makeIcon(att.name, att.isFolder); iconEl.style.marginRight = '4px';
+      ns.prepend(iconEl); ns.append(att.name);
+      chip.appendChild(ns);
+    }
+    var rm = document.createElement('button'); rm.className = 'tb-chip-rm'; rm.title = 'Remove'; rm.textContent = '×';
+    (function(u) { rm.addEventListener('click', function() { removeAttachmentByUri(u); }); })(att.uri || '');
+    chip.appendChild(rm);
+    return chip;
   }
-  function removeAttachment(idx,uri){attachments.splice(idx,1);updateChips();if(uri){post('removeAttachment',{uri:uri});}}
-  function clearAttachments(){attachments=[];updateChips();}
+  function updateChips() {
+    // Remove chips whose attachment is gone (skip cur-file-btn which lives here too)
+    var uriSet = new Set(attachments.map(function(a) { return a.uri || ''; }));
+    Array.from(tbChips.children).forEach(function(el) {
+      if (el.id === 'cur-file-btn') { return; }
+      if (!uriSet.has(el.dataset.chipUri || '')) { el.remove(); }
+    });
+    // Add chips only for new attachments
+    var rendered = new Set(Array.from(tbChips.children)
+      .filter(function(el) { return el.id !== 'cur-file-btn'; })
+      .map(function(el) { return el.dataset.chipUri || ''; }));
+    attachments.forEach(function(att) { if (!rendered.has(att.uri || '')) { tbChips.appendChild(_buildChip(att)); } });
+  }
+  function removeAttachmentByUri(uri) {
+    var idx = attachments.findIndex(function(a) { return (a.uri || '') === uri; });
+    if (idx < 0) { return; }
+    attachments.splice(idx, 1); updateChips(); refreshInputTop();
+    if (uri) { post('removeAttachment', { uri: uri }); }
+  }
+  function removeAttachment(idx, uri) { if (uri) { removeAttachmentByUri(uri); } else { attachments.splice(idx, 1); updateChips(); refreshInputTop(); } }
+  function clearAttachments() {
+    attachments = [];
+    Array.from(tbChips.children).forEach(function(el) { if (el.id !== 'cur-file-btn') { el.remove(); } });
+    refreshInputTop();
+  }
 
   // ── Messages ─────────────────────────────────────────────────────────────
   function appendUserMsg(text) {
@@ -436,30 +672,92 @@
 
       case 'setState':
         if(msg.model!==undefined){var short=msg.model.replace(/^claude-/,'').replace(/-\d{8}$/,'');modelBtn.textContent=short;modelBtn.title=msg.model+' — click to switch';modelBtn.dataset.model=msg.model;}
-        if(msg.mode!==undefined){modeBtns.forEach(function(b){b.classList.toggle('active',b.dataset.mode===msg.mode);});}
-        if(msg.yoloMode!==undefined){yoloBtn.classList.toggle('on',!!msg.yoloMode);yoloBtn.textContent=msg.yoloMode?'⚡ YOLO':'YOLO';}
+        if(msg.displayMode!==undefined){updateDisplayModeUI(msg.displayMode);}
+        if('effort' in msg){
+          thinkingEnabled=!!msg.effort;
+          if(msg.effort){currentEffort=msg.effort;}
+          updateEffortDots(null); updateThinkingUI();
+        }
         if(msg.availableModels&&msg.availableModels.length){availableModels=msg.availableModels;}
         break;
 
       case 'addUserMessage': appendUserMsg(msg.text); break;
 
       case 'streamStart':{
-        hideEmpty();usagePanel.hidden=true;sessionsPanel.hidden=true;streaming=true;currentRaw='';sendBtn.disabled=true;
+        hideEmpty();usagePanel.hidden=true;sessionsPanel.hidden=true;streaming=true;currentRaw='';progressItems=[];sendBtn.disabled=true;
         var wrap=document.createElement('div');wrap.className='msg assistant';
         var sender=document.createElement('div');sender.className='msg-sender';sender.textContent='AVN Chat';
+        var prog=document.createElement('div');prog.className='msg-progress';prog.hidden=true;
         var body=document.createElement('div');body.className='msg-body';
         var dots=document.createElement('div');dots.className='typing-dots';
         for(var d=0;d<3;d++){var dot=document.createElement('div');dot.className='dot';dots.appendChild(dot);}
-        body.appendChild(dots);wrap.appendChild(sender);wrap.appendChild(body);
-        messagesEl.appendChild(wrap);currentEl=body;scrollBottom();break;
+        body.appendChild(dots);wrap.appendChild(sender);wrap.appendChild(prog);wrap.appendChild(body);
+        messagesEl.appendChild(wrap);currentEl=body;progressEl=prog;scrollBottom();break;
       }
 
       case 'streamChunk':
         if(!streaming||!currentEl){break;}
+        // First chunk: remove typing dots
+        var dotsEl=currentEl.querySelector('.typing-dots');if(dotsEl){dotsEl.remove();}
         currentRaw+=msg.text;currentEl.innerHTML=renderMarkdown(currentRaw);scrollBottom();break;
 
-      case 'streamEnd':
-        streaming=false;currentEl=null;currentRaw='';refreshSendBtn();clearAttachments();break;
+      case 'progressEvent':{
+        if(!progressEl){break;}
+        progressItems.push({toolName:msg.toolName,toolInput:msg.toolInput||{}});
+        progressEl.hidden=false;progressEl.innerHTML='';
+        var liveDiv=document.createElement('div');liveDiv.className='progress-live';
+        progressItems.forEach(function(p,pi){
+          var item=document.createElement('div');item.className='progress-item'+(pi===progressItems.length-1?' active':'');
+          item.textContent=describeToolUse(p.toolName,p.toolInput);
+          liveDiv.appendChild(item);
+        });
+        progressEl.appendChild(liveDiv);scrollBottom();break;
+      }
+
+      case 'streamEnd':{
+        // Collapse progress into collapsible summary
+        if(progressEl&&progressItems.length>0){
+          var details=document.createElement('details');details.className='msg-progress-summary';
+          var sumEl=document.createElement('summary');
+          var fCount=0,cCount=0;
+          progressItems.forEach(function(p){
+            if(['Read','Write','Edit','MultiEdit'].indexOf(p.toolName)>=0){fCount++;}
+            else if(p.toolName==='Bash'){cCount++;}
+          });
+          var sparts=[];
+          if(fCount>0){sparts.push(fCount+' file'+(fCount!==1?'s':''));}
+          if(cCount>0){sparts.push(cCount+' command'+(cCount!==1?'s':''));}
+          if(sparts.length===0){sparts.push(progressItems.length+' step'+(progressItems.length!==1?'s':''));}
+          sumEl.textContent='Analyzed '+sparts.join(', ');
+          details.appendChild(sumEl);
+          progressItems.forEach(function(p){
+            var di=document.createElement('div');di.className='progress-detail-item';
+            di.textContent=describeToolUse(p.toolName,p.toolInput);details.appendChild(di);
+          });
+          progressEl.innerHTML='';progressEl.appendChild(details);progressEl.hidden=false;
+        } else if(progressEl){progressEl.hidden=true;}
+        // Attach hover metadata + checkpoint restore button
+        if(currentEl&&currentEl.parentElement){
+          var msgWrap=currentEl.parentElement;
+          if(msg.model){
+            var meta=document.createElement('div');meta.className='msg-meta';
+            var mShort=(msg.model||'').replace(/^claude-/,'').replace(/-\d{8}$/,'');
+            var eff=msg.effort?' · '+(msg.effort.charAt(0).toUpperCase()+msg.effort.slice(1))+' effort':'';
+            var tok=(msg.inputTokens||0)+(msg.outputTokens||0);
+            meta.textContent=mShort+eff+(tok?' · '+fmtTok(tok)+' tok':'');
+            msgWrap.appendChild(meta);
+          }
+          if(msg.checkpointHash){
+            var cpBtn=document.createElement('button');cpBtn.className='msg-restore-btn';
+            cpBtn.title='Restore workspace to before this prompt (git reset --hard)';
+            cpBtn.textContent='↩ restore checkpoint';
+            (function(h){cpBtn.addEventListener('click',function(){post('restoreCheckpoint',{checkpointHash:h});});})(msg.checkpointHash);
+            msgWrap.appendChild(cpBtn);
+          }
+        }
+        streaming=false;currentEl=null;progressEl=null;progressItems=[];currentRaw='';
+        refreshSendBtn();clearAttachments();break;
+      }
 
       case 'setStatus':
         statusDot.className=msg.status==='thinking'?'thinking':msg.status==='error'?'error':'';break;
@@ -475,25 +773,80 @@
       case 'clearMessages':
         while(messagesEl.firstChild){messagesEl.removeChild(messagesEl.firstChild);}
         messagesEl.appendChild(emptyEl);
-        streaming=false;currentEl=null;currentRaw='';refreshSendBtn();clearAttachments();usagePanel.hidden=true;break;
+        streaming=false;currentEl=null;progressEl=null;progressItems=[];currentRaw='';
+        refreshSendBtn();clearAttachments();usagePanel.hidden=true;break;
 
       case 'filesAttached':
         (msg.files||[]).forEach(function(f){
           if(f.dataUrl){
             var img=new Image();var cap=f;
-            img.onload=function(){attachments.push({name:cap.name,uri:cap.uri,isImage:true,dataUrl:cap.dataUrl,width:img.naturalWidth,height:img.naturalHeight});updateChips();};
+            img.onload=function(){attachments.push({name:cap.name,uri:cap.uri,isImage:true,dataUrl:cap.dataUrl,width:img.naturalWidth,height:img.naturalHeight});updateChips();refreshInputTop();};
             img.src=f.dataUrl;
-          } else {attachments.push({name:f.name,uri:f.uri,isFolder:!!f.isFolder});updateChips();}
+          } else {attachments.push({name:f.name,uri:f.uri,isFolder:!!f.isFolder});updateChips();refreshInputTop();}
         });break;
 
       case 'contextInfo':
         if(msg.kind==='selection'){ctxTextEl.textContent='📎 '+msg.lines+' selected lines · '+msg.file;ctxLine.hidden=false;}
-        else{ctxLine.hidden=true;}break;
+        else{ctxLine.hidden=true;}
+        refreshInputTop();break;
 
+      case 'currentFile': {
+        var newUri = msg.uri || null;
+        if (!currentFile || currentFile.uri !== newUri) { currentFileIncluded = false; }
+        currentFile = newUri ? { name: msg.name || 'file', uri: newUri } : null;
+        updateCurrentFileBtn();
+        refreshInputTop();
+        break;
+      }
+
+      case 'mcpList': {
+        var tpList = document.getElementById('tp-list');
+        tpList.innerHTML = '';
+        var mcps = msg.mcps || [];
+        if (!mcps.length) {
+          var emp = document.createElement('div'); emp.className = 'tp-empty';
+          emp.textContent = 'No MCP servers configured. Add one with the button below.';
+          tpList.appendChild(emp); break;
+        }
+        mcps.forEach(function(mcp) {
+          var row = document.createElement('div'); row.className = 'tp-item';
+          var info = document.createElement('div'); info.className = 'tp-item-info';
+          var nm = document.createElement('div'); nm.className = 'tp-item-name'; nm.textContent = mcp.name;
+          var cd = document.createElement('div'); cd.className = 'tp-item-cmd';  cd.textContent = mcp.command;
+          info.appendChild(nm); info.appendChild(cd);
+          var tog = document.createElement('button'); tog.className = 'tp-toggle' + (mcp.disabled ? '' : ' on');
+          tog.title = mcp.disabled ? 'Enable' : 'Disable';
+          tog.innerHTML = '<div class="tp-toggle-knob"></div>';
+          (function(n){ tog.addEventListener('click', function(){ post('toggleMCP', { mcpName: n }); }); })(mcp.name);
+          var del = document.createElement('button'); del.className = 'tp-del'; del.textContent = '×'; del.title = 'Remove';
+          (function(n){ del.addEventListener('click', function(){ post('removeMCP', { mcpName: n }); }); })(mcp.name);
+          row.appendChild(info); row.appendChild(tog); row.appendChild(del);
+          tpList.appendChild(row);
+        });
+        break;
+      }
       case 'fileSearchResults': renderFileResults(msg.files); break;
       case 'showUsage':         showUsage(msg); break;
       case 'updateSessions':    renderSessions(msg.sessions, msg.activeId); break;
     }
+  });
+
+  // ── Clipboard paste (images) ──────────────────────────────────────────────
+  document.addEventListener('paste', function(e) {
+    var items = e.clipboardData && e.clipboardData.items;
+    if (!items) { return; }
+    var imageItem = null, imageMime = '';
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) { imageItem = items[i]; imageMime = items[i].type; break; }
+    }
+    if (!imageItem) { return; }
+    e.preventDefault();
+    var blob = imageItem.getAsFile();
+    if (!blob) { return; }
+    var mime = imageMime;
+    var reader = new FileReader();
+    reader.onload = function(ev) { post('pasteImage', { dataUrl: ev.target.result, mimeType: mime }); };
+    reader.readAsDataURL(blob);
   });
 
   // ── Boot ──────────────────────────────────────────────────────────────────

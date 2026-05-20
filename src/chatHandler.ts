@@ -52,6 +52,13 @@ export class ChatHandler {
   getSessionId(): string | undefined { return this.state.claudeSessionId; }
   getSessionManager(): SessionManager { return this.sessionManager; }
 
+  getDisplayMode(): 'ask' | 'auto' | 'plan' {
+    if (this.state.mode === 'plan') { return 'plan'; }
+    return this.state.yoloMode ? 'auto' : 'ask';
+  }
+
+  getEffort(): ThinkingBudget | undefined { return this.state.thinkingBudget; }
+
   // ── Setters ────────────────────────────────────────────────────────────────
   setMode(mode: 'agent' | 'plan'): void {
     this.state.mode = mode;
@@ -76,6 +83,32 @@ export class ChatHandler {
     this.state.yoloMode = !this.state.yoloMode;
     this.context.workspaceState.update('yoloMode', this.state.yoloMode);
     this.statusBar.setYolo(this.state.yoloMode);
+  }
+
+  setDisplayMode(dm: 'ask' | 'auto' | 'plan'): void {
+    if (dm === 'plan') {
+      this.state.mode    = 'plan';
+      this.state.yoloMode = false;
+    } else if (dm === 'auto') {
+      this.state.mode    = 'agent';
+      this.state.yoloMode = true;
+    } else {
+      this.state.mode    = 'agent';
+      this.state.yoloMode = false;
+    }
+    this.context.workspaceState.update('mode', this.state.mode);
+    this.context.workspaceState.update('yoloMode', this.state.yoloMode);
+    this.statusBar.setYolo(this.state.yoloMode);
+    const root = this.getWorkspaceRoot();
+    if (root && this.state.activeSessionId) {
+      this.sessionManager.update(root, this.state.activeSessionId, { mode: this.state.mode });
+    }
+  }
+
+  setEffort(level: ThinkingBudget | undefined): void {
+    this.state.thinkingBudget = level;
+    this.context.workspaceState.update('thinkingBudget', level);
+    this.statusBar.setBudget(level);
   }
 
   removeDroppedItemByUri(uriStr: string): void {
@@ -189,6 +222,9 @@ export class ChatHandler {
           if (ev.type === 'assistant' && ev.message?.content) {
             for (const block of ev.message.content) {
               if (block.type === 'text' && block.text) { collectedText.push(block.text); response.markdown(block.text); }
+              if (block.type === 'tool_use' && block.name && response.progress) {
+                response.progress(block.name, (block.input ?? {}) as Record<string, unknown>);
+              }
             }
             if (ev.message.usage) {
               inputTokens  += ev.message.usage.input_tokens  ?? 0;
@@ -210,6 +246,10 @@ export class ChatHandler {
         onDone: (sid) => { if (sid) { this.state.claudeSessionId = sid; } resolve(); },
       });
     });
+
+    if (response.done) {
+      response.done({ inputTokens, outputTokens, model: this.state.model, effort: this.state.thinkingBudget });
+    }
 
     this.statusBar.setStatus('idle');
 
@@ -269,10 +309,7 @@ export class ChatHandler {
   }
 
   private getEffortLevel(): ThinkingBudget | undefined {
-    if (!this.state.thinkingBudget) { return undefined; }
-    const config = vscode.workspace.getConfiguration('claude');
-    const thinkingModels: string[] = config.get('thinkingModels', []);
-    return thinkingModels.includes(this.state.model) ? this.state.thinkingBudget : undefined;
+    return this.state.thinkingBudget;
   }
 
   private async doIndex(root: string, response: ChatStream, token: vscode.CancellationToken): Promise<void> {

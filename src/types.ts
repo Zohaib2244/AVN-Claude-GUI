@@ -1,5 +1,7 @@
 export interface ChatStream {
   markdown(text: string): void;
+  progress?(toolName: string, toolInput: Record<string, unknown>): void;
+  done?(stats: { inputTokens: number; outputTokens: number; model: string; effort?: string }): void;
 }
 
 export interface ClaudeStreamEvent {
