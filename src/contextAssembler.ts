@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { SymbolRef } from './types';
 
 export interface DroppedItem {
   uri: vscode.Uri;
@@ -19,6 +20,7 @@ export async function assembleContext(
   droppedItems: DroppedItem[],
   selection?: { text: string; filePath: string; languageId: string },
   activeFile?: { text: string; filePath: string; languageId: string },
+  symbolRefs?: SymbolRef[],
 ): Promise<AssembledContext> {
   const parts: string[] = [];
 
@@ -47,9 +49,26 @@ export async function assembleContext(
     }
   }
 
+  for (const ref of symbolRefs ?? []) {
+    const snippet = await readSymbolSnippet(ref);
+    if (snippet) { parts.push(snippet); }
+  }
+
   parts.push(`<user-message>\n${userMessage}\n</user-message>`);
 
   return { prompt: parts.join('\n\n'), hasProjectContext };
+}
+
+async function readSymbolSnippet(ref: SymbolRef): Promise<string | null> {
+  try {
+    const uri = vscode.Uri.file(ref.filePath);
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    const lines = Buffer.from(bytes).toString('utf8').split('\n');
+    const start = Math.max(0, ref.line - 1 - 8);
+    const end   = Math.min(lines.length, ref.line - 1 + 20);
+    const snippet = lines.slice(start, end).join('\n');
+    return `<symbol-ref name="${ref.name}" kind="${ref.kind}" file="${ref.filePath}" line="${ref.line}">\n${snippet}\n</symbol-ref>`;
+  } catch { return null; }
 }
 
 async function readDropped(item: DroppedItem): Promise<string | null> {

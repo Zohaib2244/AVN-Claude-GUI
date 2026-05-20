@@ -22,6 +22,7 @@
   let currentFile         = null;   // { name, uri }
   let currentFileIncluded = false;
   let thinkingEnabled     = false;
+  let symbolRefs          = [];   // { name, relPath, line, kind }
 
   // ── DOM ──────────────────────────────────────────────────────────────────
   const messagesEl   = document.getElementById('messages');
@@ -59,7 +60,7 @@
   function scrollBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
   function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function fmtTok(n) { if (n>=1e6){return (n/1e6).toFixed(1)+'M';} if(n>=1e3){return (n/1e3).toFixed(1)+'k';} return String(n); }
-  function refreshInputTop() { inputTop.hidden = ctxLine.hidden && attachments.length === 0 && currentFile === null; }
+  function refreshInputTop() { inputTop.hidden = ctxLine.hidden && attachments.length === 0 && currentFile === null && symbolRefs.length === 0; }
 
   function updateCurrentFileBtn() {
     if (!currentFile) { curFileBtn.hidden = true; return; }
@@ -297,7 +298,7 @@
     fpMode = 'at'; fpHighIdx = -1;
     filePicker.classList.add('at-mode');
     var rect = document.getElementById('input-card').getBoundingClientRect();
-    _positionPicker(filePicker, rect, 280);
+    _positionPicker(filePicker, rect, 320);
     filePicker.hidden = false;
     closeCmdPicker(); closeModelPicker(); closeModePicker();
   }
@@ -305,7 +306,7 @@
     fpMode = 'plus'; fpHighIdx = -1; atMentionStart = -1;
     filePicker.classList.remove('at-mode');
     var rect = document.getElementById('add-btn').getBoundingClientRect();
-    _positionPicker(filePicker, rect, 280);
+    _positionPicker(filePicker, rect, 320);
     filePicker.hidden = false;
     fpSearch.value = ''; closeCmdPicker(); closeModelPicker(); closeModePicker();
     fpSearch.focus(); triggerSearch('');
@@ -337,25 +338,32 @@
   function renderFileResults(files) {
     fpResults.innerHTML = '';
     if (!files || !files.length) { fpHighIdx=-1; var e2=document.createElement('div');e2.className='fp-empty';e2.textContent='No files found';fpResults.appendChild(e2);return; }
-    // Track which URIs are already attached (for greying out)
     var addedUris = new Set(attachments.map(function(a) { return a.uri || ''; }));
-    // Also grey out the current file if it's included
     if (currentFileIncluded && currentFile) { addedUris.add(currentFile.uri || ''); }
     fpHighIdx = -1;
     files.forEach(function(f, idx) {
       var alreadyAdded = addedUris.has(f.uri || '');
       var cls = 'fp-item' + (alreadyAdded ? ' fp-added' : '');
-      // Auto-highlight first non-added item
       if (!alreadyAdded && fpHighIdx === -1) { fpHighIdx = idx; cls += ' fp-hi'; }
       var btn = document.createElement('button'); btn.className = cls;
-      var left = document.createElement('div'); left.className = 'fp-item-left';
-      left.appendChild(makeIcon(f.name, f.isFolder));
-      var name = document.createElement('span'); name.className = 'fp-name'; name.textContent = f.name; left.appendChild(name);
-      var rel  = document.createElement('span'); rel.className = 'fp-relpath'; rel.textContent = f.relPath || '';
+
+      // Top row: icon + filename
+      var topRow = document.createElement('div'); topRow.className = 'fp-item-top';
+      topRow.appendChild(makeIcon(f.name, f.isFolder));
+      var nameEl = document.createElement('span'); nameEl.className = 'fp-name'; nameEl.textContent = f.name;
       if (alreadyAdded) {
-        var tag = document.createElement('span'); tag.className = 'fp-added-tag'; tag.textContent = 'added'; rel.appendChild(tag);
+        var tag = document.createElement('span'); tag.className = 'fp-added-tag'; tag.textContent = 'added';
+        nameEl.appendChild(tag);
       }
-      btn.appendChild(left); btn.appendChild(rel);
+      topRow.appendChild(nameEl);
+      btn.appendChild(topRow);
+
+      // Bottom row: path (only when non-empty)
+      if (f.relPath) {
+        var pathEl = document.createElement('div'); pathEl.className = 'fp-relpath'; pathEl.textContent = f.relPath;
+        btn.appendChild(pathEl);
+      }
+
       if (!alreadyAdded) { btn.addEventListener('click', function() { selectFile(f); }); }
       fpResults.appendChild(btn);
     });
@@ -598,8 +606,36 @@
   function removeAttachment(idx, uri) { if (uri) { removeAttachmentByUri(uri); } else { attachments.splice(idx, 1); updateChips(); refreshInputTop(); } }
   function clearAttachments() {
     attachments = [];
+    symbolRefs  = [];
     Array.from(tbChips.children).forEach(function(el) { if (el.id !== 'cur-file-btn') { el.remove(); } });
     refreshInputTop();
+  }
+
+  // ── Symbol reference chips ────────────────────────────────────────────────
+  function _addSymbolChip(name, relPath, line, kind) {
+    if (tbChips.querySelector('[data-chip-uri="symbol:' + name + '"]')) { return; }
+    var chip = document.createElement('div');
+    chip.className = 'tb-chip tb-chip-symbol chip-new';
+    chip.dataset.chipUri = 'symbol:' + name;
+    var icon = document.createElement('span');
+    icon.className = 'tb-chip-sym-icon';
+    icon.textContent = (kind === 'class' || kind === 'interface') ? '◈' : (kind === 'function' || kind === 'method' || kind === 'constructor') ? 'ƒ' : '⬡';
+    var nm = document.createElement('span'); nm.className = 'tb-chip-name'; nm.textContent = name; nm.title = name;
+    var loc = document.createElement('span'); loc.className = 'tb-chip-sym-loc'; loc.textContent = relPath + ':' + line;
+    chip.appendChild(icon); chip.appendChild(nm); chip.appendChild(loc);
+    var rm = document.createElement('button'); rm.className = 'tb-chip-rm'; rm.title = 'Remove'; rm.textContent = '×';
+    (function(n) { rm.addEventListener('click', function() { _removeSymbolRef(n); }); })(name);
+    chip.appendChild(rm);
+    tbChips.appendChild(chip);
+  }
+
+  function _removeSymbolRef(name) {
+    var idx = symbolRefs.findIndex(function(r) { return r.name === name; });
+    if (idx >= 0) { symbolRefs.splice(idx, 1); }
+    var chip = tbChips.querySelector('[data-chip-uri="symbol:' + name + '"]');
+    if (chip) { chip.remove(); }
+    refreshInputTop();
+    post('removeSymbolRef', { symbolName: name });
   }
 
   // ── Messages ─────────────────────────────────────────────────────────────
@@ -828,10 +864,16 @@
       case 'fileSearchResults': renderFileResults(msg.files); break;
       case 'showUsage':         showUsage(msg); break;
       case 'updateSessions':    renderSessions(msg.sessions, msg.activeId); break;
+
+      case 'symbolResolved':
+        symbolRefs.push({ name: msg.name, relPath: msg.relPath, line: msg.line, kind: msg.kind });
+        _addSymbolChip(msg.name, msg.relPath, msg.line, msg.kind);
+        refreshInputTop();
+        break;
     }
   });
 
-  // ── Clipboard paste (images) ──────────────────────────────────────────────
+  // ── Clipboard paste (images + symbol resolution) ─────────────────────────
   document.addEventListener('paste', function(e) {
     var items = e.clipboardData && e.clipboardData.items;
     if (!items) { return; }
@@ -839,14 +881,22 @@
     for (var i = 0; i < items.length; i++) {
       if (items[i].type.indexOf('image') !== -1) { imageItem = items[i]; imageMime = items[i].type; break; }
     }
-    if (!imageItem) { return; }
-    e.preventDefault();
-    var blob = imageItem.getAsFile();
-    if (!blob) { return; }
-    var mime = imageMime;
-    var reader = new FileReader();
-    reader.onload = function(ev) { post('pasteImage', { dataUrl: ev.target.result, mimeType: mime }); };
-    reader.readAsDataURL(blob);
+    if (imageItem) {
+      e.preventDefault();
+      var blob = imageItem.getAsFile();
+      if (!blob) { return; }
+      var mime = imageMime;
+      var reader = new FileReader();
+      reader.onload = function(ev) { post('pasteImage', { dataUrl: ev.target.result, mimeType: mime }); };
+      reader.readAsDataURL(blob);
+      return;
+    }
+    // If pasted text is a single identifier, try to resolve it as a code symbol
+    var textData = (e.clipboardData.getData('text/plain') || '').trim();
+    if (textData.length >= 2 && /^[$_a-zA-Z][\w$]*$/.test(textData)) {
+      post('resolveSymbol', { symbolName: textData });
+      // Don't preventDefault — let the text paste normally into the textarea too
+    }
   });
 
   // ── Boot ──────────────────────────────────────────────────────────────────

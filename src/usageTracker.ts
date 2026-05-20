@@ -66,6 +66,13 @@ export class UsageTracker {
     return this.getSummary().dailyTokens;
   }
 
+  limitPercent(): number {
+    const config = vscode.workspace.getConfiguration('claude');
+    const limit: number = config.get('dailyTokenLimit', 0);
+    if (!limit) { return 0; }
+    return Math.round((this.dailyTokens() / limit) * 100);
+  }
+
   private getRecords(): UsageRecord[] {
     return this.context.globalState.get<UsageRecord[]>(STORAGE_KEY, []);
   }

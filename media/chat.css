@@ -271,7 +271,7 @@ body {
 /* ── File picker ── */
 #file-picker {
   position: fixed; z-index: 1000;
-  width: 280px; max-height: 300px;
+  width: 320px; max-height: 340px;
   display: flex; flex-direction: column;
   background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
   border: 1px solid var(--vscode-panel-border);
@@ -295,17 +295,24 @@ body {
 #fp-search::placeholder { color: var(--vscode-input-placeholderForeground); }
 #fp-results { overflow-y: auto; flex: 1; }
 .fp-item {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; flex-direction: column; align-items: stretch;
   width: 100%; padding: 5px 12px; text-align: left;
   background: none; border: none; cursor: pointer; color: var(--vscode-foreground);
-  font-size: 12px; gap: 8px;
+  font-size: 12px; gap: 1px;
 }
 .fp-item:hover { background: var(--vscode-list-hoverBackground); }
-.fp-item-left  { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.fp-item-top   { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .fp-icon       { font-size: 12px; flex-shrink: 0; opacity: .65; width: 14px; text-align: center; }
-.fp-name       { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fp-relpath    { font-size: 10px; opacity: .4; flex-shrink: 0; white-space: nowrap; }
+.fp-name       { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* Path shown below the name — rtl so long paths show the deepest folder, not root */
+.fp-relpath    {
+  font-size: 10px; opacity: .38; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  padding-left: 23px;           /* align under name (icon width + gap) */
+  direction: rtl; text-align: left;
+}
 .fp-item.fp-hi    { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.fp-item.fp-hi .fp-relpath { opacity: .55; }
 .fp-item.fp-added { opacity: .4; cursor: default; }
 .fp-item.fp-added:hover { background: none; }
 .fp-added-tag { font-size: 9px; opacity: .7; margin-left: 6px; font-style: italic; }
@@ -348,6 +355,23 @@ body {
 .tb-chip-rm { background: none; border: none; cursor: pointer; font-size: 13px; opacity: .5; padding: 0; color: inherit; line-height: 1; flex-shrink: 0; }
 .tb-chip-rm:hover { opacity: 1; color: var(--vscode-errorForeground); }
 .tb-chip-img { max-width: 180px; padding: 2px 6px 2px 4px; background: var(--vscode-textBlockQuote-background); }
+
+/* Symbol reference chips */
+.tb-chip-symbol {
+  max-width: 220px; gap: 5px;
+  border-color: color-mix(in srgb, var(--vscode-charts-blue, #5b9cf6) 55%, var(--vscode-panel-border));
+  background: color-mix(in srgb, var(--vscode-charts-blue, #5b9cf6) 9%, var(--vscode-badge-background, var(--vscode-textBlockQuote-background)));
+}
+.tb-chip-sym-icon {
+  font-size: 11px; flex-shrink: 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--vscode-charts-blue, #5b9cf6); opacity: .85;
+}
+.tb-chip-sym-loc {
+  font-size: 9px; opacity: .45; flex-shrink: 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .tb-chip-thumb { width: 28px; height: 20px; object-fit: cover; border-radius: 3px; flex-shrink: 0; }
 .tb-chip-info  { display: flex; flex-direction: column; min-width: 0; }
 .tb-chip-iname { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

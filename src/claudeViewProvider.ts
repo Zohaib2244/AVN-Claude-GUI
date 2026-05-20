@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as cp from 'child_process';
 import { ChatHandler } from './chatHandler';
-import { ChatStream, ThinkingBudget } from './types';
+import { ChatStream, ThinkingBudget, SymbolRef } from './types';
 import { UsageTracker } from './usageTracker';
 import { DroppedItem, getActiveEditorContext } from './contextAssembler';
 import { SessionManager } from './sessionManager';
@@ -35,6 +35,7 @@ interface WebviewMessage {
   currentFileRef?: string;
   mcpName?: string;
   checkpointHash?: string;
+  symbolName?: string;
 }
 
 export class ClaudeViewProvider implements vscode.WebviewViewProvider {
@@ -45,6 +46,8 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
   private _pendingPosts: unknown[] = [];
   private _isReady = false;
   private _tempFiles: string[] = [];
+  private _fileCache: vscode.Uri[] | undefined;
+  private _fileCacheTs = 0;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -277,25 +280,61 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         const wsUri = vscode.workspace.workspaceFolders?.[0]?.uri;
         if (!wsUri) { this._post({ type: 'fileSearchResults', files: [] }); break; }
         try {
-          const fileUris = await vscode.workspace.findFiles('**/*', '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**}', 400);
-          const dirSet   = new Set<string>();
+          // Cache the full file list for 30 s so repeated searches don't re-scan
+          const now = Date.now();
+          if (!this._fileCache || now - this._fileCacheTs > 30_000) {
+            this._fileCache   = await vscode.workspace.findFiles(
+              '**/*',
+              '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**,**/build/**,**/.svn/**}',
+            );
+            this._fileCacheTs = now;
+          }
+          const fileUris = this._fileCache;
+
+          const dirSet = new Set<string>();
           fileUris.forEach(u => {
-            const rel = vscode.workspace.asRelativePath(u);
+            const rel   = vscode.workspace.asRelativePath(u);
             const parts = rel.split('/');
             for (let i = 1; i < parts.length; i++) { dirSet.add(parts.slice(0, i).join('/')); }
           });
+
           type FR = { name: string; relPath: string; uri: string; isFolder: boolean; ext: string };
           const results: FR[] = [];
+
+          // Folders first (max 15)
           Array.from(dirSet)
-            .filter(d => !query || d.toLowerCase().includes(query) || path.basename(d).toLowerCase().includes(query))
-            .sort().slice(0, 20)
-            .forEach(d => { const parent = path.dirname(d); results.push({ name: path.basename(d), relPath: parent === '.' ? '' : parent + '/', uri: vscode.Uri.joinPath(wsUri, d).toString(), isFolder: true, ext: '' }); });
+            .filter(d => !query || path.basename(d).toLowerCase().includes(query) || d.toLowerCase().includes(query))
+            .sort()
+            .slice(0, 15)
+            .forEach(d => {
+              const parent = path.dirname(d);
+              results.push({ name: path.basename(d), relPath: parent === '.' ? '' : parent + '/', uri: vscode.Uri.joinPath(wsUri, d).toString(), isFolder: true, ext: '' });
+            });
+
+          // Files (max 35), ranked: name-starts-with-query first, then alphabetical
           fileUris
-            .filter(u => { const rel = vscode.workspace.asRelativePath(u); return !query || rel.toLowerCase().includes(query) || path.basename(u.fsPath).toLowerCase().includes(query); })
-            .sort((a, b) => vscode.workspace.asRelativePath(a).localeCompare(vscode.workspace.asRelativePath(b)))
-            .slice(0, 30)
-            .forEach(u => { const rel = vscode.workspace.asRelativePath(u); const parent = path.dirname(rel); results.push({ name: path.basename(u.fsPath), relPath: parent === '.' ? '' : parent + '/', uri: u.toString(), isFolder: false, ext: path.extname(u.fsPath).slice(1).toLowerCase() }); });
-          this._post({ type: 'fileSearchResults', files: results.slice(0, 35) });
+            .filter(u => {
+              if (!query) { return true; }
+              const base = path.basename(u.fsPath).toLowerCase();
+              const rel  = vscode.workspace.asRelativePath(u).toLowerCase();
+              return base.includes(query) || rel.includes(query);
+            })
+            .sort((a, b) => {
+              if (query) {
+                const aS = path.basename(a.fsPath).toLowerCase().startsWith(query) ? 0 : 1;
+                const bS = path.basename(b.fsPath).toLowerCase().startsWith(query) ? 0 : 1;
+                if (aS !== bS) { return aS - bS; }
+              }
+              return vscode.workspace.asRelativePath(a).localeCompare(vscode.workspace.asRelativePath(b));
+            })
+            .slice(0, 35)
+            .forEach(u => {
+              const rel    = vscode.workspace.asRelativePath(u);
+              const parent = path.dirname(rel);
+              results.push({ name: path.basename(u.fsPath), relPath: parent === '.' ? '' : parent + '/', uri: u.toString(), isFolder: false, ext: path.extname(u.fsPath).slice(1).toLowerCase() });
+            });
+
+          this._post({ type: 'fileSearchResults', files: results });
         } catch { this._post({ type: 'fileSearchResults', files: [] }); }
         break;
       }
@@ -319,6 +358,45 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
 
       case 'clearAttachments':
         this.chatHandler.clearDroppedItems();
+        this.chatHandler.clearSymbolRefs();
+        break;
+
+      case 'resolveSymbol': {
+        if (!msg.symbolName) { break; }
+        const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
+          'vscode.executeWorkspaceSymbolProvider',
+          msg.symbolName,
+        );
+        if (!symbols?.length) { break; }
+        const kindPriority: Record<number, number> = {
+          [vscode.SymbolKind.Function]:   10,
+          [vscode.SymbolKind.Method]:      9,
+          [vscode.SymbolKind.Class]:       8,
+          [vscode.SymbolKind.Interface]:   7,
+          [vscode.SymbolKind.Constructor]: 6,
+          [vscode.SymbolKind.Variable]:    3,
+          [vscode.SymbolKind.Constant]:    3,
+        };
+        const exact = symbols
+          .filter(s => s.name === msg.symbolName)
+          .sort((a, b) => (kindPriority[b.kind] ?? 0) - (kindPriority[a.kind] ?? 0));
+        if (!exact.length) { break; }
+        const match   = exact[0];
+        const wsRoot  = this.getWorkspaceRoot();
+        const relPath = wsRoot ? path.relative(wsRoot, match.location.uri.fsPath) : path.basename(match.location.uri.fsPath);
+        const ref: SymbolRef = {
+          name:     match.name,
+          filePath: match.location.uri.fsPath,
+          line:     match.location.range.start.line + 1,
+          kind:     vscode.SymbolKind[match.kind].toLowerCase(),
+        };
+        this.chatHandler.addSymbolRef(ref);
+        this._post({ type: 'symbolResolved', name: ref.name, relPath, line: ref.line, kind: ref.kind });
+        break;
+      }
+
+      case 'removeSymbolRef':
+        if (msg.symbolName) { this.chatHandler.removeSymbolRef(msg.symbolName); }
         break;
 
       case 'restoreCheckpoint': {
@@ -397,6 +475,13 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async runRequest(text: string, command: string | undefined, root: string): Promise<void> {
+    const config     = vscode.workspace.getConfiguration('claude');
+    const dailyLimit = config.get<number>('dailyTokenLimit', 0);
+    if (dailyLimit > 0 && this.usageTracker.dailyTokens() >= dailyLimit) {
+      this._post({ type: 'showError', text: `Daily token limit reached (${dailyLimit.toLocaleString()} tokens). Adjust "claude.dailyTokenLimit" in settings to continue.` });
+      return;
+    }
+
     this._currentCts?.dispose();
     this._currentCts = new vscode.CancellationTokenSource();
     const token = this._currentCts.token;

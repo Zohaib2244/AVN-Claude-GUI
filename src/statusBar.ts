@@ -11,6 +11,7 @@ export class StatusBarManager implements vscode.Disposable {
   private spinnerTimer: NodeJS.Timeout | undefined;
   private status: ClaudeStatus = 'idle';
   private usageTracker: UsageTracker;
+  private hasWarnedLimit = false;
 
   constructor(usageTracker: UsageTracker) {
     this.usageTracker = usageTracker;
@@ -32,7 +33,14 @@ export class StatusBarManager implements vscode.Disposable {
     this.render();
   }
 
-  refreshTokens(): void { this.render(); }
+  refreshTokens(): void {
+    const pct = this.usageTracker.limitPercent();
+    if (pct >= 90 && !this.hasWarnedLimit) {
+      this.hasWarnedLimit = true;
+      vscode.window.showWarningMessage(`Claude: Daily token usage is at ${pct}% of your configured limit.`);
+    }
+    this.render();
+  }
 
   /** Kept for call-site compatibility — model/yolo/budget now live in the webview footer. */
   setModel(_model: string): void {}
@@ -75,8 +83,26 @@ export class StatusBarManager implements vscode.Disposable {
   private render(): void {
     this.renderStatus();
     const daily = this.usageTracker.dailyTokens();
-    this.tokenItem.text    = daily > 0 ? formatTokens(daily) : '0 tok';
-    this.tokenItem.tooltip = 'Daily token usage — click for details';
+    const pct   = this.usageTracker.limitPercent();
+    const config = vscode.workspace.getConfiguration('claude');
+    const limit: number = config.get('dailyTokenLimit', 0);
+
+    let text = formatTokens(daily);
+    if (limit > 0) { text += ` / ${formatTokens(limit)}`; }
+
+    if (pct >= 90) {
+      text = `⚠ ${text}`;
+      this.tokenItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+      this.tokenItem.color           = new vscode.ThemeColor('statusBarItem.warningForeground');
+    } else {
+      this.tokenItem.backgroundColor = undefined;
+      this.tokenItem.color           = undefined;
+    }
+
+    this.tokenItem.text    = text;
+    this.tokenItem.tooltip = limit > 0
+      ? `Daily usage: ${pct}% of ${formatTokens(limit)} limit — click for details`
+      : 'Daily token usage — click for details';
   }
 
   dispose(): void {

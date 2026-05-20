@@ -6,7 +6,7 @@ import { UsageTracker } from './usageTracker';
 import { assembleContext, getActiveEditorContext, DroppedItem } from './contextAssembler';
 import { SessionManager, ChatSession } from './sessionManager';
 import { ProjectIndexer } from './projectIndexer';
-import { ChatStream, ClaudeStreamEvent, ThinkingBudget } from './types';
+import { ChatStream, ClaudeStreamEvent, ThinkingBudget, SymbolRef } from './types';
 
 export interface SessionState {
   activeSessionId: string | undefined;
@@ -15,6 +15,7 @@ export interface SessionState {
   yoloMode: boolean;
   thinkingBudget: ThinkingBudget | undefined;
   droppedItems: DroppedItem[];
+  symbolRefs: SymbolRef[];
   mode: 'agent' | 'plan';
 }
 
@@ -38,6 +39,7 @@ export class ChatHandler {
       yoloMode:         ws.get('yoloMode', false),
       thinkingBudget:   ws.get('thinkingBudget', undefined),
       droppedItems:     [],
+      symbolRefs:       [],
       mode:             ws.get('mode', 'agent') as 'agent' | 'plan',
     };
     this.statusBar.setYolo(this.state.yoloMode);
@@ -175,8 +177,9 @@ export class ChatHandler {
     if (command === 'explain') { await this.doFileAction('explain', workspaceRoot, response, token); return; }
 
     const { selection } = getActiveEditorContext();
-    const { prompt }    = await assembleContext(userText, workspaceRoot, this.state.droppedItems, selection, undefined);
+    const { prompt }    = await assembleContext(userText, workspaceRoot, this.state.droppedItems, selection, undefined, this.state.symbolRefs);
     this.state.droppedItems = [];
+    this.state.symbolRefs   = [];
 
     const finalPrompt = this.state.mode === 'plan'
       ? '<instruction>\nPlan mode: Analyze and outline an implementation plan carefully. Do NOT write or modify any files.\n</instruction>\n\n' + prompt
@@ -372,4 +375,8 @@ export class ChatHandler {
 
   addDroppedItems(items: DroppedItem[]): void  { this.state.droppedItems.push(...items); }
   clearDroppedItems(): void                     { this.state.droppedItems = []; }
+
+  addSymbolRef(ref: SymbolRef): void    { this.state.symbolRefs.push(ref); }
+  removeSymbolRef(name: string): void   { this.state.symbolRefs = this.state.symbolRefs.filter(r => r.name !== name); }
+  clearSymbolRefs(): void               { this.state.symbolRefs = []; }
 }

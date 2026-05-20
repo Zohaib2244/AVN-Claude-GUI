@@ -2,14 +2,19 @@
   "name": "avn-claude-gui",
   "displayName": "AVN Chat",
   "description": "Standalone sidebar chat powered by the Claude Code CLI",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "personal",
   "private": true,
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["AI", "Other"],
-  "activationEvents": ["onStartupFinished"],
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -98,7 +103,10 @@
         },
         "claude.thinkingModels": {
           "type": "array",
-          "default": ["claude-opus-4-7", "claude-opus-4-5"],
+          "default": [
+            "claude-opus-4-7",
+            "claude-opus-4-5"
+          ],
           "description": "Models that support extended thinking"
         }
       }

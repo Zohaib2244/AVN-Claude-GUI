@@ -50,6 +50,13 @@ export interface ConversationTurn {
 
 export type ThinkingBudget = 'low' | 'medium' | 'high' | 'max';
 
+export interface SymbolRef {
+  name: string;
+  filePath: string;
+  line: number;
+  kind: string;
+}
+
 export const THINKING_BUDGET_TOKENS: Record<ThinkingBudget, number> = {
   low: 1024,
   medium: 4096,
