@@ -91,20 +91,127 @@ body {
 .msg-body pre  { background: var(--vscode-textBlockQuote-background); border: 1px solid var(--vscode-panel-border); border-radius: 5px; padding: 10px 12px; overflow-x: auto; margin: 6px 0; }
 .msg-body pre code { background: none; padding: 0; font-family: var(--vscode-editor-font-family, monospace); font-size: var(--vscode-editor-font-size, 13px); border-radius: 0; }
 .code-lang { display: block; font-size: 10px; opacity: .4; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .5px; }
-/* ── Live progress (tool calls during streaming) ── */
-.msg-progress { margin-bottom: 4px; }
+/* ── Thinking text (replaces typing dots) ── */
+.thinking-text {
+  font-size: 11px; font-style: italic;
+  color: var(--vscode-descriptionForeground); opacity: .55;
+  display: flex; align-items: center; height: 20px; gap: 1px;
+}
+.thinking-ellipsis::after {
+  content: ''; animation: ell-cycle 1.5s steps(4, end) infinite;
+}
+@keyframes ell-cycle {
+  0%   { content: ''; }   25%  { content: '.'; }
+  50%  { content: '..'; } 75%  { content: '...'; }
+}
+
+/* ── Activity panel (live tool-use view during streaming) ── */
+.msg-progress {
+  display: flex; flex-direction: column; gap: 5px;
+  margin-bottom: 6px; padding: 6px 8px;
+  background: color-mix(in srgb, var(--vscode-textBlockQuote-background) 60%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 45%, transparent);
+  border-radius: 0 4px 4px 0;
+}
 .msg-progress[hidden] { display: none; }
+
+/* Section */
+.ap-section { display: flex; flex-direction: column; gap: 2px; }
+.ap-hdr {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .7px; opacity: .4; padding: 4px 0 2px;
+}
+.ap-hdr-ic    { font-size: 10px; }
+.ap-hdr-title { flex: 1; }
+.ap-hdr-count {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 9px; opacity: .8; font-weight: 400;
+}
+.ap-more { font-size: 9px; opacity: .3; padding: 1px 0 1px 4px; font-style: italic; }
+
+/* Todo items */
+.ap-todo {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 11px; padding: 1px 0 1px 2px; opacity: .45;
+  overflow: hidden;
+}
+.ap-todo-completed { opacity: .35; text-decoration: line-through; }
+.ap-todo-in_progress { opacity: 1; }
+.ap-todo-ic {
+  font-size: 11px; flex-shrink: 0; width: 13px; text-align: center;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+.ap-todo-completed  .ap-todo-ic { color: var(--vscode-charts-green, #4ec9b0); }
+.ap-todo-in_progress .ap-todo-ic {
+  color: var(--vscode-charts-yellow, #cca700);
+  display: inline-block; animation: spin-ic 1.1s linear infinite;
+}
+@keyframes spin-ic { to { transform: rotate(360deg); } }
+.ap-todo-tx {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+}
+
+/* File items */
+.ap-file {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10px; padding: 1px 0 1px 2px; opacity: .5;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+.ap-file-ic { width: 14px; flex-shrink: 0; font-size: 10px; font-style: normal; text-align: center; }
+.ap-file-read     .ap-file-ic::before { content: '↓'; color: var(--vscode-charts-blue,   #5b9cf6); }
+.ap-file-write    .ap-file-ic::before { content: '↑'; color: var(--vscode-charts-green,  #4ec9b0); }
+.ap-file-edit     .ap-file-ic::before { content: '±'; color: var(--vscode-charts-orange, #e8a87c); }
+.ap-file-glob .ap-file-ic::before,
+.ap-file-list .ap-file-ic::before     { content: '⊞'; color: var(--vscode-descriptionForeground); }
+.ap-file-path {
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: rtl; text-align: left; /* show deepest folder when truncated */
+}
+.ap-file.ap-active { opacity: 1; }
+
+/* Command items */
+.ap-cmd {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 10px; padding: 1px 0 1px 2px; opacity: .5;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+.ap-cmd-pr { color: var(--vscode-charts-green, #4ec9b0); flex-shrink: 0; }
+.ap-cmd-tx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.ap-cmd.ap-active { opacity: 1; }
+
+/* Search / web / agent items */
+.ap-search {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 10px; padding: 1px 0 1px 2px; opacity: .5;
+}
+.ap-search-verb {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .4px;
+  opacity: .5; flex-shrink: 0; min-width: 34px;
+}
+.ap-search-q {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 10px;
+}
+.ap-search.ap-active { opacity: 1; }
+
+/* Pulsing left-border on the currently running item */
+.ap-active {
+  border-left: 2px solid var(--vscode-charts-yellow, #cca700);
+  padding-left: 4px;
+  animation: ap-pulse .9s ease-in-out infinite;
+}
+@keyframes ap-pulse {
+  0%, 100% { border-left-color: var(--vscode-charts-yellow, #cca700); }
+  50%       { border-left-color: transparent; }
+}
+
+/* Keep legacy selectors working (streamEnd collapse uses them) */
 .progress-live { display: flex; flex-direction: column; gap: 1px; }
 .progress-item {
   font-size: 10px; opacity: .45; padding: 1px 0;
-  display: flex; align-items: center; gap: 6px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.progress-item::before {
-  content: ''; display: inline-block; width: 5px; height: 5px; border-radius: 50%;
-  background: var(--vscode-button-background); opacity: .5; flex-shrink: 0;
-}
-.progress-item.active::before { background: var(--vscode-charts-yellow, #cca700); animation: pulse .8s ease-in-out infinite; }
 
 /* ── Collapsed progress summary ── */
 .msg-progress-summary { margin-bottom: 6px; }

@@ -666,6 +666,132 @@
     refreshInputTop();
   }
 
+  // ── Activity panel (live tool-use view) ──────────────────────────────────
+  function renderActivityPanel() {
+    if (!progressEl || !progressItems.length) { return; }
+    progressEl.hidden = false;
+    progressEl.innerHTML = '';
+
+    // ── Todos: show the latest TodoWrite state ─────────────────────────────
+    var lastTodo = null;
+    for (var ti = progressItems.length - 1; ti >= 0; ti--) {
+      if (progressItems[ti].toolName === 'TodoWrite' || progressItems[ti].toolName === 'TodoRead') {
+        if (progressItems[ti].toolInput && Array.isArray(progressItems[ti].toolInput.todos)) {
+          lastTodo = progressItems[ti]; break;
+        }
+      }
+    }
+    if (lastTodo) { progressEl.appendChild(_apTodoSection(lastTodo.toolInput.todos)); }
+
+    // ── File operations ────────────────────────────────────────────────────
+    var FILE_TOOLS = ['Read','Write','Edit','MultiEdit','Glob','LS'];
+    var fileOps = progressItems.filter(function(p) { return FILE_TOOLS.indexOf(p.toolName) >= 0; });
+    if (fileOps.length) { progressEl.appendChild(_apFileSection(fileOps)); }
+
+    // ── Bash commands ──────────────────────────────────────────────────────
+    var cmds = progressItems.filter(function(p) { return p.toolName === 'Bash'; });
+    if (cmds.length) { progressEl.appendChild(_apCmdSection(cmds)); }
+
+    // ── Search / web / agent ───────────────────────────────────────────────
+    var SEARCH_TOOLS = ['Grep','WebFetch','WebSearch','Agent'];
+    var searches = progressItems.filter(function(p) { return SEARCH_TOOLS.indexOf(p.toolName) >= 0; });
+    if (searches.length) { progressEl.appendChild(_apSearchSection(searches)); }
+
+    scrollBottom();
+  }
+
+  // Helper: create a section container with a header
+  function _apSec(icon, title, count) {
+    var sec = document.createElement('div'); sec.className = 'ap-section';
+    var hdr = document.createElement('div'); hdr.className = 'ap-hdr';
+    var ic  = document.createElement('span'); ic.className = 'ap-hdr-ic'; ic.textContent = icon;
+    var ttl = document.createElement('span'); ttl.className = 'ap-hdr-title'; ttl.textContent = title;
+    hdr.appendChild(ic); hdr.appendChild(ttl);
+    if (count != null) {
+      var cnt = document.createElement('span'); cnt.className = 'ap-hdr-count'; cnt.textContent = count;
+      hdr.appendChild(cnt);
+    }
+    sec.appendChild(hdr);
+    return sec;
+  }
+
+  function _apTodoSection(todos) {
+    var done  = todos.filter(function(t){ return t.status === 'completed'; }).length;
+    var sec   = _apSec('📋', 'Tasks', done + '/' + todos.length);
+    todos.forEach(function(t) {
+      var row = document.createElement('div');
+      row.className = 'ap-todo ap-todo-' + (t.status || 'pending');
+      var ic  = document.createElement('span'); ic.className = 'ap-todo-ic';
+      ic.textContent = t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '⟳' : '○';
+      var tx  = document.createElement('span'); tx.className = 'ap-todo-tx';
+      tx.textContent = (t.status === 'in_progress' && t.activeForm) ? t.activeForm : t.content;
+      row.appendChild(ic); row.appendChild(tx);
+      sec.appendChild(row);
+    });
+    return sec;
+  }
+
+  function _apFileSection(ops) {
+    // Deduplicate by tool+path, keep last occurrence (most recent is most relevant)
+    var map = new Map();
+    ops.forEach(function(p) {
+      var fp  = String(p.toolInput.file_path || p.toolInput.path || p.toolInput.pattern || '');
+      var key = p.toolName + ':' + fp;
+      map.set(key, p);  // later calls overwrite earlier ones
+    });
+    var deduped = Array.from(map.values());
+    var sec     = _apSec('📂', 'Files', deduped.length);
+    // Show at most 8 items; if more, show "…N older" note first
+    var visible = deduped.length > 8 ? deduped.slice(-8) : deduped;
+    if (deduped.length > 8) {
+      var more = document.createElement('div'); more.className = 'ap-more';
+      more.textContent = '…' + (deduped.length - 8) + ' older';
+      sec.appendChild(more);
+    }
+    var VERB = { Read:'read', Write:'write', Edit:'edit', MultiEdit:'edit', Glob:'glob', LS:'list' };
+    visible.forEach(function(p, pi) {
+      var fp  = String(p.toolInput.file_path || p.toolInput.path || p.toolInput.pattern || '');
+      var row = document.createElement('div');
+      row.className = 'ap-file ap-file-' + (VERB[p.toolName] || 'read') + (pi === visible.length - 1 ? ' ap-active' : '');
+      var ic  = document.createElement('span'); ic.className = 'ap-file-ic';
+      var lbl = document.createElement('span'); lbl.className = 'ap-file-path'; lbl.textContent = fp || p.toolName;
+      row.appendChild(ic); row.appendChild(lbl);
+      sec.appendChild(row);
+    });
+    return sec;
+  }
+
+  function _apCmdSection(cmds) {
+    var sec = _apSec('⚡', 'Commands', cmds.length);
+    cmds.forEach(function(p, pi) {
+      var row = document.createElement('div');
+      row.className = 'ap-cmd' + (pi === cmds.length - 1 ? ' ap-active' : '');
+      var pr  = document.createElement('span'); pr.className = 'ap-cmd-pr'; pr.textContent = '$';
+      var tx  = document.createElement('span'); tx.className = 'ap-cmd-tx';
+      tx.textContent = String(p.toolInput.command || '').slice(0, 100);
+      row.appendChild(pr); row.appendChild(tx);
+      sec.appendChild(row);
+    });
+    return sec;
+  }
+
+  function _apSearchSection(items) {
+    var sec = _apSec('🔍', 'Search', items.length);
+    var VERB = { Grep:'grep', WebFetch:'fetch', WebSearch:'web', Agent:'agent' };
+    items.forEach(function(p, pi) {
+      var row = document.createElement('div');
+      row.className = 'ap-search' + (pi === items.length - 1 ? ' ap-active' : '');
+      var vb  = document.createElement('span'); vb.className = 'ap-search-verb';
+      vb.textContent = VERB[p.toolName] || p.toolName.toLowerCase();
+      var tx  = document.createElement('span'); tx.className = 'ap-search-q';
+      var q   = p.toolInput.pattern || p.toolInput.query || p.toolInput.url || p.toolInput.description || '';
+      tx.textContent = String(q).slice(0, 100);
+      row.appendChild(vb); row.appendChild(tx);
+      sec.appendChild(row);
+    });
+    return sec;
+  }
+
   // ── Symbol reference chips ────────────────────────────────────────────────
   function _addSymbolChip(name, relPath, line, kind) {
     if (tbChips.querySelector('[data-chip-uri="symbol:' + name + '"]')) { return; }
@@ -796,29 +922,23 @@
         var sender=document.createElement('div');sender.className='msg-sender';sender.textContent='AVN Chat';
         var prog=document.createElement('div');prog.className='msg-progress';prog.hidden=true;
         var body=document.createElement('div');body.className='msg-body';
-        var dots=document.createElement('div');dots.className='typing-dots';
-        for(var d=0;d<3;d++){var dot=document.createElement('div');dot.className='dot';dots.appendChild(dot);}
-        body.appendChild(dots);wrap.appendChild(sender);wrap.appendChild(prog);wrap.appendChild(body);
+        var thinkEl=document.createElement('div');thinkEl.className='thinking-text';
+        thinkEl.appendChild(document.createTextNode('Nutting All Over the Codebase'));
+        var ellEl=document.createElement('span');ellEl.className='thinking-ellipsis';thinkEl.appendChild(ellEl);
+        body.appendChild(thinkEl);wrap.appendChild(sender);wrap.appendChild(prog);wrap.appendChild(body);
         messagesEl.appendChild(wrap);currentEl=body;progressEl=prog;scrollBottom();break;
       }
 
       case 'streamChunk':
         if(!streaming||!currentEl){break;}
-        // First chunk: remove typing dots
-        var dotsEl=currentEl.querySelector('.typing-dots');if(dotsEl){dotsEl.remove();}
+        var thinkingEl=currentEl.querySelector('.thinking-text,.typing-dots');if(thinkingEl){thinkingEl.remove();}
         currentRaw+=msg.text;currentEl.innerHTML=renderMarkdown(currentRaw);scrollBottom();break;
 
       case 'progressEvent':{
         if(!progressEl){break;}
         progressItems.push({toolName:msg.toolName,toolInput:msg.toolInput||{}});
-        progressEl.hidden=false;progressEl.innerHTML='';
-        var liveDiv=document.createElement('div');liveDiv.className='progress-live';
-        progressItems.forEach(function(p,pi){
-          var item=document.createElement('div');item.className='progress-item'+(pi===progressItems.length-1?' active':'');
-          item.textContent=describeToolUse(p.toolName,p.toolInput);
-          liveDiv.appendChild(item);
-        });
-        progressEl.appendChild(liveDiv);scrollBottom();break;
+        renderActivityPanel();
+        break;
       }
 
       case 'streamEnd':{
