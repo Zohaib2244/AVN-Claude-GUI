@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as cp from 'child_process';
 import { ChatHandler } from './chatHandler';
-import { ChatStream, ThinkingBudget, SymbolRef, BackendType } from './types';
+import { ChatStream, ThinkingBudget, SymbolRef, BackendType, StoredMessage } from './types';
 import { UsageTracker } from './usageTracker';
 import { DroppedItem, getActiveEditorContext } from './contextAssembler';
 import { SessionManager } from './sessionManager';
@@ -37,6 +37,7 @@ interface WebviewMessage {
   checkpointHash?: string;
   symbolName?: string;
   backend?: string;
+  rawText?: string;
 }
 
 export class ClaudeViewProvider implements vscode.WebviewViewProvider {
@@ -113,6 +114,11 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     this._post({ type: 'updateSessions', sessions, activeId });
   }
 
+  private _pushHistory(sessionId: string): void {
+    const msgs = this._sessionManager.getMessages(sessionId);
+    if (msgs.length) { this._post({ type: 'loadHistory', messages: msgs }); }
+  }
+
   private _fullState() {
     const config = vscode.workspace.getConfiguration('claude');
     return {
@@ -135,7 +141,12 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         this._isReady = true;
         this._flushPending();
         this._post(this._fullState());
-        if (root) { this._pushSessions(root); }
+        if (root) {
+          this.chatHandler.ensureSessionLoaded(root);
+          this._pushSessions(root);
+          const readySid = this.chatHandler.getActiveSessionId();
+          if (readySid) { this._pushHistory(readySid); }
+        }
         break;
 
       case 'send': {
@@ -144,11 +155,19 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         const text = msg.text?.trim() ?? '';
         if (cmd === 'clear') {
           this.chatHandler.clearSession(root);
+          const clearSid = this.chatHandler.getActiveSessionId();
+          if (clearSid) { this._sessionManager.clearMessages(clearSid); }
           this._post({ type: 'clearMessages' });
           if (root) { this._pushSessions(root); }
           return;
         }
         if (!text && !cmd) { return; }
+        // Persist the user message before running
+        const sendSid = this.chatHandler.getActiveSessionId();
+        if (sendSid) {
+          const displayText = msg.rawText ?? (cmd ? `/${cmd}${text ? ' ' + text : ''}` : text);
+          this._sessionManager.appendMessage(sendSid, { role: 'user', text: displayText, timestamp: Date.now() });
+        }
         if (msg.currentFileRef) {
           try {
             const refUri = vscode.Uri.parse(msg.currentFileRef);
@@ -172,6 +191,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         this._post({ type: 'clearMessages' });
         this._post(this._fullState());
         this._pushSessions(root);
+        // New session has no history — nothing to push
         break;
       }
 
@@ -182,18 +202,21 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
           this._post({ type: 'clearMessages' });
           this._post(this._fullState());
           this._pushSessions(root);
+          this._pushHistory(s.id);
         }
         break;
       }
 
       case 'deleteSession': {
         if (!root || !msg.sessionId) { break; }
+        // Clean up stored messages for the deleted session
+        this._sessionManager.deleteMessages(msg.sessionId);
         const nextId = this._sessionManager.delete(root, msg.sessionId);
-        // If deleted session was active, switch to the next
         if (nextId) {
           this.chatHandler.switchSession(root, nextId);
           this._post({ type: 'clearMessages' });
           this._post(this._fullState());
+          this._pushHistory(nextId);
         }
         this._pushSessions(root);
         break;
@@ -563,16 +586,31 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     this._post({ type: 'streamStart' });
     this._post({ type: 'setStatus', status: 'thinking' });
     let endStats: { inputTokens: number; outputTokens: number; model: string; effort?: string } | undefined;
+    let accumulatedText = '';
     const stream: ChatStream = {
-      markdown: (chunk: string) => this._post({ type: 'streamChunk', text: chunk }),
+      markdown: (chunk: string) => { accumulatedText += chunk; this._post({ type: 'streamChunk', text: chunk }); },
       progress: (toolName: string, toolInput: Record<string, unknown>) => this._post({ type: 'progressEvent', toolName, toolInput }),
       done:     (stats) => { endStats = stats; },
     };
     try {
       await this.chatHandler.chat(text, command, stream, token, root);
     } catch (err) {
-      this._post({ type: 'streamChunk', text: `\n\n**Error:** ${err instanceof Error ? err.message : String(err)}` });
+      const errText = `\n\n**Error:** ${err instanceof Error ? err.message : String(err)}`;
+      accumulatedText += errText;
+      this._post({ type: 'streamChunk', text: errText });
     } finally {
+      // Persist the assistant message
+      const rSid = this.chatHandler.getActiveSessionId();
+      if (rSid && accumulatedText.trim()) {
+        const stats = endStats ?? { model: this.chatHandler.getModel(), inputTokens: 0, outputTokens: 0 };
+        this._sessionManager.appendMessage(rSid, {
+          role:      'assistant',
+          text:      accumulatedText,
+          timestamp: Date.now(),
+          model:     stats.model,
+          tokens:    (stats.inputTokens ?? 0) + (stats.outputTokens ?? 0),
+        });
+      }
       this._post({ type: 'streamEnd', ...(endStats ?? { model: this.chatHandler.getModel() }), checkpointHash });
       this._post({ type: 'setStatus', status: 'idle' });
     }

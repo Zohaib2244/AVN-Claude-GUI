@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { BackendType } from './types';
+import { BackendType, StoredMessage } from './types';
 
 export interface ChatSession {
   id: string;
@@ -96,5 +96,27 @@ export class SessionManager {
   /** Return the active session, creating a default one if none exist yet. */
   ensureActive(root: string, model: string, mode: 'agent' | 'plan', backend: BackendType = 'claude'): ChatSession {
     return this.active(root) ?? this.create(root, 'New Chat', model, mode, backend);
+  }
+
+  // ── Message persistence ───────────────────────────────────────────────────
+  private msk(sessionId: string): string { return 'avnchat.msgs.' + sessionId; }
+
+  getMessages(sessionId: string): StoredMessage[] {
+    return this.ctx.workspaceState.get<StoredMessage[]>(this.msk(sessionId), []);
+  }
+
+  appendMessage(sessionId: string, msg: StoredMessage): void {
+    const all = this.getMessages(sessionId);
+    all.push(msg);
+    // Cap at 300 messages to avoid unbounded storage growth
+    this.ctx.workspaceState.update(this.msk(sessionId), all.length > 300 ? all.slice(-300) : all);
+  }
+
+  deleteMessages(sessionId: string): void {
+    this.ctx.workspaceState.update(this.msk(sessionId), undefined);
+  }
+
+  clearMessages(sessionId: string): void {
+    this.ctx.workspaceState.update(this.msk(sessionId), []);
   }
 }

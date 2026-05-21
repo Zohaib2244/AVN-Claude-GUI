@@ -66,6 +66,14 @@ export const THINKING_BUDGET_TOKENS: Record<ThinkingBudget, number> = {
   max: 32000,
 };
 
+export interface StoredMessage {
+  role: 'user' | 'assistant';
+  text: string;        // raw user text or accumulated markdown for assistant
+  timestamp: number;
+  model?: string;
+  tokens?: number;
+}
+
 export interface UsageRecord {
   timestamp: number;
   inputTokens: number;

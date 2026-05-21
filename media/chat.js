@@ -281,7 +281,7 @@
     ctxLine.hidden = true; refreshInputTop();
     closeFilePicker(false); closeCmdPicker(); closeModelPicker();
     refreshSendBtn();
-    var sendPayload = { text: text, command: command };
+    var sendPayload = { text: text, command: command, rawText: raw };
     if (currentFileIncluded && currentFile) { sendPayload.currentFileRef = currentFile.uri; }
     post('send', sendPayload);
   }
@@ -827,6 +827,28 @@
     wrap.appendChild(bubble);messagesEl.appendChild(wrap);scrollBottom();
   }
 
+  function _appendHistoryMsg(text, model, tokens) {
+    hideEmpty();
+    var wrap   = document.createElement('div'); wrap.className = 'msg assistant';
+    var sender = document.createElement('div'); sender.className = 'msg-sender'; sender.textContent = 'AVN Chat';
+    var body   = document.createElement('div'); body.className = 'msg-body';
+    body.innerHTML = renderMarkdown(text || '');
+    wrap.appendChild(sender); wrap.appendChild(body);
+    if (model || tokens) {
+      var meta  = document.createElement('div'); meta.className = 'msg-meta';
+      meta.style.opacity = '0.3'; // always visible in history (not hover-only)
+      var short = (model || '').replace(/^claude-/, '').replace(/-\d{8}$/, '') || (model || '');
+      // For OpenCode models like "anthropic/claude-sonnet-4-6" → "claude-sonnet-4-6"
+      if (short.includes('/')) { short = short.split('/').slice(1).join('/'); }
+      var parts = [];
+      if (short) { parts.push(short); }
+      if (tokens) { parts.push(fmtTok(tokens) + ' tok'); }
+      meta.textContent = parts.join(' · ');
+      wrap.appendChild(meta);
+    }
+    messagesEl.appendChild(wrap);
+  }
+
   // ── Markdown renderer ─────────────────────────────────────────────────────
   function renderInline(s) {
     return s
@@ -1055,6 +1077,18 @@
       case 'fileSearchResults': renderFileResults(msg.files); break;
       case 'showUsage':         showUsage(msg); break;
       case 'updateSessions':    renderSessions(msg.sessions, msg.activeId); break;
+
+      case 'loadHistory': {
+        var histMsgs = msg.messages || [];
+        if (!histMsgs.length) { break; }
+        hideEmpty();
+        histMsgs.forEach(function(m) {
+          if (m.role === 'user') { appendUserMsg(m.text); }
+          else { _appendHistoryMsg(m.text, m.model, m.tokens); }
+        });
+        scrollBottom();
+        break;
+      }
 
       case 'symbolResolved':
         symbolRefs.push({ name: msg.name, relPath: msg.relPath, line: msg.line, kind: msg.kind });

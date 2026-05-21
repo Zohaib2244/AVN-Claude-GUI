@@ -54,12 +54,18 @@ export class ChatHandler {
   }
 
   // ── Getters ────────────────────────────────────────────────────────────────
-  getModel():     string           { return this.state.model; }
-  getYolo():      boolean          { return this.state.yoloMode; }
-  getMode():      'agent' | 'plan' { return this.state.mode; }
-  getSessionId(): string | undefined { return this.state.claudeSessionId; }
-  getBackend():   BackendType      { return this.state.activeBackend; }
-  getSessionManager(): SessionManager { return this.sessionManager; }
+  getModel():           string           { return this.state.model; }
+  getYolo():            boolean          { return this.state.yoloMode; }
+  getMode():            'agent' | 'plan' { return this.state.mode; }
+  getSessionId():       string | undefined { return this.state.claudeSessionId; }
+  getActiveSessionId(): string | undefined { return this.state.activeSessionId; }
+  getBackend():         BackendType      { return this.state.activeBackend; }
+  getSessionManager():  SessionManager   { return this.sessionManager; }
+
+  /** Load the active session if not already done — call on webview ready. */
+  ensureSessionLoaded(root: string): void {
+    if (!this.state.activeSessionId) { this.loadSession(root); }
+  }
 
   getDisplayMode(): 'ask' | 'auto' | 'plan' {
     if (this.state.mode === 'plan') { return 'plan'; }
