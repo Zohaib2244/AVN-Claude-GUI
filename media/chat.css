@@ -428,6 +428,31 @@ body {
 /* Hide search input in @-mention mode (textarea drives the search) */
 #file-picker.at-mode #fp-search { display: none; }
 
+/* ── Change bar ── */
+#change-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 12px; flex-shrink: 0;
+  background: color-mix(in srgb, var(--vscode-charts-orange, #e8a87c) 10%, var(--vscode-sideBar-background, var(--vscode-editor-background)));
+  border-top: 1px solid color-mix(in srgb, var(--vscode-charts-orange, #e8a87c) 35%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--vscode-charts-orange, #e8a87c) 35%, transparent);
+}
+#change-bar[hidden] { display: none; }
+#cb-text { font-size: 11px; opacity: .8; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#cb-btns { display: flex; gap: 5px; flex-shrink: 0; }
+#cb-keep {
+  padding: 2px 10px; font-size: 11px; border-radius: 6px; cursor: pointer;
+  background: var(--vscode-button-background); color: var(--vscode-button-foreground);
+  border: none; font-family: var(--vscode-font-family);
+}
+#cb-keep:hover { background: var(--vscode-button-hoverBackground); }
+#cb-undo {
+  padding: 2px 10px; font-size: 11px; border-radius: 6px; cursor: pointer;
+  background: none; color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-panel-border); font-family: var(--vscode-font-family);
+  transition: border-color .12s, color .12s;
+}
+#cb-undo:hover { border-color: var(--vscode-charts-red, #f14c4c); color: var(--vscode-charts-red, #f14c4c); }
+
 /* ── Floating input card (3 separated regions) ── */
 #input-card {
   margin: 0 6px 6px;
@@ -571,6 +596,8 @@ body {
 }
 #send-btn:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
 #send-btn:disabled { opacity: .35; cursor: not-allowed; }
+#send-btn.stop-mode { background: color-mix(in srgb, var(--vscode-charts-red, #f14c4c) 80%, transparent); }
+#send-btn.stop-mode:hover { background: var(--vscode-charts-red, #f14c4c); }
 
 /* ── Popup pickers (fixed position, small cards near trigger button) ── */
 #model-picker {

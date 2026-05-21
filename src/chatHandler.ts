@@ -267,8 +267,18 @@ export class ChatHandler {
         },
         onError: (err) => {
           response.markdown(err.message === 'ENOENT'
-            ? '**OpenCode CLI not found.** Install from [opencode.ai](https://opencode.ai) and ensure it is on your PATH.'
-            : `**OpenCode error:** ${err.message}`);
+            ? [
+                '**OpenCode CLI not found.**',
+                '',
+                '**Setup steps:**',
+                '1. Install: `npm install -g opencode-ai`',
+                '2. Verify: `opencode --version` in your terminal',
+                '3. Configure a provider API key — e.g. for Anthropic: set `ANTHROPIC_API_KEY` in your environment, or run `opencode` once to open the setup wizard',
+                '4. Reload VS Code after installation',
+                '',
+                'Full docs: [opencode.ai/docs](https://opencode.ai/docs)',
+              ].join('\n')
+            : `**OpenCode error:** ${err.message}\n\nCheck the **OpenCode (Debug)** output channel for raw event logs.`);
           this.statusBar.setStatus('error');
           resolve();
         },
@@ -335,8 +345,18 @@ export class ChatHandler {
         },
         onError: (err) => {
           response.markdown(err.message === 'ENOENT'
-            ? '**Claude CLI not found.** Install from [claude.ai/code](https://claude.ai/code) and ensure it is on your PATH.'
-            : `**CLI error:** ${err.message}`);
+            ? [
+                '**Claude Code CLI not found.**',
+                '',
+                '**Setup steps:**',
+                '1. Install: `npm install -g @anthropic-ai/claude-code`',
+                '2. Authenticate: run `claude login` in your terminal',
+                '3. Verify: `claude --version`',
+                '4. Reload VS Code after installation',
+                '',
+                'Full docs: [claude.ai/code](https://claude.ai/code)',
+              ].join('\n')
+            : `**Claude CLI error:** ${err.message}`);
           this.statusBar.setStatus('error');
           resolve();
         },

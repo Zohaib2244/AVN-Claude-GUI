@@ -55,6 +55,8 @@
   const tbChips      = document.getElementById('tb-chips');
   const sessionsPanel= document.getElementById('sessions-panel');
   const spList       = document.getElementById('sp-list');
+  const changeBar    = document.getElementById('change-bar');
+  const cbText       = document.getElementById('cb-text');
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   function post(type, extra) { vscApi.postMessage(Object.assign({ type }, extra || {})); }
@@ -178,7 +180,9 @@
   document.getElementById('ctx-dismiss-btn').addEventListener('click', function(){ ctxLine.hidden = true; refreshInputTop(); });
   document.getElementById('add-btn').addEventListener('click',         function(){ openFilePicker_plus(); });
   document.getElementById('cmd-btn').addEventListener('click',         function(){ toggleCmdPicker(); });
-  document.getElementById('send-btn').addEventListener('click',        function(){ handleSend(); });
+  document.getElementById('cb-keep').addEventListener('click',         function(){ post('acceptChanges'); changeBar.hidden = true; });
+  document.getElementById('cb-undo').addEventListener('click',         function(){ post('undoAllChanges'); changeBar.hidden = true; });
+  document.getElementById('send-btn').addEventListener('click',        function(){ if (streaming) { post('cancel'); } else { handleSend(); } });
   document.getElementById('model-btn').addEventListener('click',       function(){ toggleModelPicker(); });
   document.getElementById('display-mode-btn').addEventListener('click', function(){ toggleModePicker(); });
   document.getElementById('sp-new').addEventListener('click',          function(){ post('createSession'); });
@@ -211,7 +215,7 @@
     if (!modelPicker.hidden && e.key === 'Escape') { closeModelPicker(); return; }
     if (!modePicker.hidden  && e.key === 'Escape') { closeModePicker();  return; }
     if (!sessionsPanel.hidden && e.key === 'Escape') { sessionsPanel.hidden = true; return; }
-    if (e.key === 'Escape') { clearAllReferences(); return; }
+    if (e.key === 'Escape') { if (streaming) { post('cancel'); return; } clearAllReferences(); return; }
     if (e.key === '/' && inputEl.value.trim() === '') { e.preventDefault(); openCmdPicker(); return; }
 
     // ── Auto-continue numbered lists and blockquotes on Shift+Enter ─────────
@@ -939,7 +943,9 @@
       case 'addUserMessage': appendUserMsg(msg.text); break;
 
       case 'streamStart':{
-        hideEmpty();usagePanel.hidden=true;sessionsPanel.hidden=true;streaming=true;currentRaw='';progressItems=[];sendBtn.disabled=true;
+        hideEmpty();usagePanel.hidden=true;sessionsPanel.hidden=true;streaming=true;currentRaw='';progressItems=[];
+        sendBtn.disabled=false;sendBtn.classList.add('stop-mode');sendBtn.title='Stop (Esc)';
+        sendBtn.innerHTML='<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>';
         var wrap=document.createElement('div');wrap.className='msg assistant';
         var sender=document.createElement('div');sender.className='msg-sender';sender.textContent='AVN Chat';
         var prog=document.createElement('div');prog.className='msg-progress';prog.hidden=true;
@@ -1005,6 +1011,8 @@
           }
         }
         streaming=false;currentEl=null;progressEl=null;progressItems=[];currentRaw='';
+        sendBtn.classList.remove('stop-mode');sendBtn.title='Send (Enter)';
+        sendBtn.innerHTML='<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>';
         refreshSendBtn();clearAttachments();break;
       }
 
@@ -1023,6 +1031,7 @@
         while(messagesEl.firstChild){messagesEl.removeChild(messagesEl.firstChild);}
         messagesEl.appendChild(emptyEl);
         streaming=false;currentEl=null;progressEl=null;progressItems=[];currentRaw='';
+        changeBar.hidden=true;
         refreshSendBtn();clearAttachments();usagePanel.hidden=true;break;
 
       case 'filesAttached':
@@ -1077,6 +1086,21 @@
       case 'fileSearchResults': renderFileResults(msg.files); break;
       case 'showUsage':         showUsage(msg); break;
       case 'updateSessions':    renderSessions(msg.sessions, msg.activeId); break;
+
+      case 'updateChangeBar': {
+        if (!msg.files) { changeBar.hidden = true; break; }
+        var cbFiles = msg.files;
+        var cbParts = [cbFiles + ' file' + (cbFiles !== 1 ? 's' : '') + ' changed'];
+        if (msg.added || msg.removed) {
+          var linesParts = [];
+          if (msg.added)   { linesParts.push('+' + msg.added); }
+          if (msg.removed) { linesParts.push('−' + msg.removed); }
+          cbParts.push(linesParts.join('  ') + ' lines');
+        }
+        cbText.textContent = cbParts.join('  ·  ');
+        changeBar.hidden = false;
+        break;
+      }
 
       case 'loadHistory': {
         var histMsgs = msg.messages || [];
