@@ -57,6 +57,7 @@
   const spList       = document.getElementById('sp-list');
   const changeBar    = document.getElementById('change-bar');
   const cbText       = document.getElementById('cb-text');
+  const cbFiles      = document.getElementById('cb-files');
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   function post(type, extra) { vscApi.postMessage(Object.assign({ type }, extra || {})); }
@@ -194,6 +195,15 @@
     inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
     refreshSendBtn();
     checkAtMention();
+    // Keep cmd picker in sync when user types /command
+    var val = inputEl.value;
+    if (val.startsWith('/')) {
+      var query = val.slice(1).toLowerCase().trim();
+      if (cmdPicker.hidden) { openCmdPicker(); }
+      filterCmdPicker(query);
+    } else if (!cmdPicker.hidden) {
+      closeCmdPicker();
+    }
   });
 
   // ── Keyboard ─────────────────────────────────────────────────────────────
@@ -208,15 +218,15 @@
     if (!cmdPicker.hidden) {
       if (e.key === 'ArrowDown') { e.preventDefault(); moveCpHighlight(1); return; }
       if (e.key === 'ArrowUp')   { e.preventDefault(); moveCpHighlight(-1); return; }
-      if (e.key === 'Enter')     { e.preventDefault(); selectCpHighlighted(); return; }
-      if (e.key === 'Escape')    { closeCmdPicker(); return; }
-      return;
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); selectCpHighlighted(); return; }
+      if (e.key === 'Escape')    { closeCmdPicker(); inputEl.value = ''; inputEl.style.height = 'auto'; refreshSendBtn(); return; }
+      // Other keys fall through so the user can type to filter
     }
     if (!modelPicker.hidden && e.key === 'Escape') { closeModelPicker(); return; }
     if (!modePicker.hidden  && e.key === 'Escape') { closeModePicker();  return; }
     if (!sessionsPanel.hidden && e.key === 'Escape') { sessionsPanel.hidden = true; return; }
     if (e.key === 'Escape') { if (streaming) { post('cancel'); return; } clearAllReferences(); return; }
-    if (e.key === '/' && inputEl.value.trim() === '') { e.preventDefault(); openCmdPicker(); return; }
+    if (e.key === '/' && inputEl.value.trim() === '') { openCmdPicker(); return; }
 
     // ── Auto-continue numbered lists and blockquotes on Shift+Enter ─────────
     if (e.key === 'Enter' && e.shiftKey) {
@@ -386,6 +396,8 @@
 
   // ── Commands picker ───────────────────────────────────────────────────────
   function openCmdPicker() {
+    // Reset filter — show all items
+    cmdPicker.querySelectorAll('.cp-item').forEach(function(el){ el.hidden=false; });
     var items=cmdPicker.querySelectorAll('.cp-item');
     cpHighIdx=items.length>0?0:-1;
     items.forEach(function(el,i){el.classList.toggle('cp-hi',i===0);});
@@ -399,12 +411,28 @@
   }
   function closeCmdPicker() { cmdPicker.hidden=true; cpHighIdx=-1; }
   function toggleCmdPicker(){ cmdPicker.hidden ? openCmdPicker() : closeCmdPicker(); }
+  function filterCmdPicker(query) {
+    var items=cmdPicker.querySelectorAll('.cp-item');
+    items.forEach(function(el){ el.classList.remove('cp-hi'); });
+    var visible=[];
+    items.forEach(function(el){
+      var cmd=(el.dataset.cmd||'').toLowerCase();
+      var show=!query||cmd.startsWith(query)||cmd.includes(query);
+      el.hidden=!show;
+      if(show){visible.push(el);}
+    });
+    cpHighIdx=visible.length?0:-1;
+    if(visible.length){visible[0].classList.add('cp-hi');}
+  }
   function moveCpHighlight(delta) {
-    var items=cmdPicker.querySelectorAll('.cp-item'); if(!items.length){return;}
+    var items=Array.from(cmdPicker.querySelectorAll('.cp-item:not([hidden])')); if(!items.length){return;}
     cpHighIdx=cpHighIdx<0?(delta>0?0:items.length-1):Math.max(0,Math.min(items.length-1,cpHighIdx+delta));
     items.forEach(function(el,i){el.classList.toggle('cp-hi',i===cpHighIdx);if(i===cpHighIdx){el.scrollIntoView({block:'nearest'});}});
   }
-  function selectCpHighlighted() { var items=cmdPicker.querySelectorAll('.cp-item'); var t=items[cpHighIdx>=0?cpHighIdx:0]; if(t){t.click();} }
+  function selectCpHighlighted() {
+    var items=cmdPicker.querySelectorAll('.cp-item:not([hidden])');
+    var t=items[cpHighIdx>=0?cpHighIdx:0]; if(t){t.click();}
+  }
   cmdPicker.addEventListener('click', function(e) {
     var item = e.target.closest('.cp-item'); if(!item){return;}
     var cmd=item.dataset.cmd; closeCmdPicker(); inputEl.value=''; inputEl.style.height='auto'; refreshSendBtn();
@@ -735,17 +763,72 @@
     return sec;
   }
 
+  var DIFF_PREVIEW = 8; // lines shown before truncation
+
+  function _renderDiffBlock(oldStr, newStr) {
+    var wrap     = document.createElement('div');
+    wrap.className = 'ap-diff-wrap';
+    var oldLines = oldStr ? oldStr.split('\n') : [];
+    var newLines = newStr ? newStr.split('\n') : [];
+    // Trim trailing blank line that editors often append
+    if (oldLines.length && oldLines[oldLines.length-1] === '') { oldLines.pop(); }
+    if (newLines.length && newLines[newLines.length-1] === '') { newLines.pop(); }
+    var expanded = false;
+    function rebuild() {
+      wrap.innerHTML = '';
+      var showOld = expanded ? oldLines : oldLines.slice(0, DIFF_PREVIEW);
+      var showNew = expanded ? newLines : newLines.slice(0, DIFF_PREVIEW);
+      if (showOld.length) {
+        var rb = document.createElement('div'); rb.className = 'ap-diff-block ap-diff-removed';
+        showOld.forEach(function(ln) {
+          var r = document.createElement('div'); r.className = 'ap-diff-line';
+          var s = document.createElement('span'); s.className = 'ap-diff-sign'; s.textContent = '−';
+          var c = document.createElement('span'); c.className = 'ap-diff-code'; c.textContent = ln;
+          r.appendChild(s); r.appendChild(c); rb.appendChild(r);
+        });
+        if (!expanded && oldLines.length > DIFF_PREVIEW) {
+          var mx = document.createElement('div'); mx.className = 'ap-diff-more';
+          mx.textContent = '…' + (oldLines.length - DIFF_PREVIEW) + ' more lines';
+          rb.appendChild(mx);
+        }
+        wrap.appendChild(rb);
+      }
+      if (showNew.length) {
+        var ab = document.createElement('div'); ab.className = 'ap-diff-block ap-diff-added';
+        showNew.forEach(function(ln) {
+          var r = document.createElement('div'); r.className = 'ap-diff-line';
+          var s = document.createElement('span'); s.className = 'ap-diff-sign'; s.textContent = '+';
+          var c = document.createElement('span'); c.className = 'ap-diff-code'; c.textContent = ln;
+          r.appendChild(s); r.appendChild(c); ab.appendChild(r);
+        });
+        if (!expanded && newLines.length > DIFF_PREVIEW) {
+          var mx2 = document.createElement('div'); mx2.className = 'ap-diff-more';
+          mx2.textContent = '…' + (newLines.length - DIFF_PREVIEW) + ' more lines';
+          ab.appendChild(mx2);
+        }
+        wrap.appendChild(ab);
+      }
+      if (oldLines.length > DIFF_PREVIEW || newLines.length > DIFF_PREVIEW) {
+        var ex = document.createElement('div'); ex.className = 'ap-diff-expand';
+        ex.textContent = expanded ? 'Collapse' : 'Click to expand';
+        ex.addEventListener('click', function() { expanded = !expanded; rebuild(); });
+        wrap.appendChild(ex);
+      }
+    }
+    rebuild();
+    return wrap;
+  }
+
   function _apFileSection(ops) {
-    // Deduplicate by tool+path, keep last occurrence (most recent is most relevant)
+    // Deduplicate by tool+path, keep last occurrence
     var map = new Map();
     ops.forEach(function(p) {
       var fp  = String(p.toolInput.file_path || p.toolInput.path || p.toolInput.pattern || '');
       var key = p.toolName + ':' + fp;
-      map.set(key, p);  // later calls overwrite earlier ones
+      map.set(key, p);
     });
     var deduped = Array.from(map.values());
     var sec     = _apSec('📂', 'Files', deduped.length);
-    // Show at most 8 items; if more, show "…N older" note first
     var visible = deduped.length > 8 ? deduped.slice(-8) : deduped;
     if (deduped.length > 8) {
       var more = document.createElement('div'); more.className = 'ap-more';
@@ -754,13 +837,31 @@
     }
     var VERB = { Read:'read', Write:'write', Edit:'edit', MultiEdit:'edit', Glob:'glob', LS:'list' };
     visible.forEach(function(p, pi) {
-      var fp  = String(p.toolInput.file_path || p.toolInput.path || p.toolInput.pattern || '');
+      var fp      = String(p.toolInput.file_path || p.toolInput.path || p.toolInput.pattern || '');
+      var isEdit  = p.toolName === 'Edit' || p.toolName === 'MultiEdit';
+      var isWrite = p.toolName === 'Write';
+      var oldStr  = isEdit  ? String(p.toolInput.old_string || p.toolInput.old_content || '') : '';
+      var newStr  = isEdit  ? String(p.toolInput.new_string || p.toolInput.new_content || '')
+                  : isWrite ? String(p.toolInput.content || '') : '';
       var row = document.createElement('div');
       row.className = 'ap-file ap-file-' + (VERB[p.toolName] || 'read') + (pi === visible.length - 1 ? ' ap-active' : '');
       var ic  = document.createElement('span'); ic.className = 'ap-file-ic';
       var lbl = document.createElement('span'); lbl.className = 'ap-file-path'; lbl.textContent = fp || p.toolName;
       row.appendChild(ic); row.appendChild(lbl);
+      // Line-count summary badge for edits
+      if ((isEdit || isWrite) && (oldStr || newStr)) {
+        var badge = document.createElement('span'); badge.className = 'ap-diff-badge';
+        var parts = [];
+        if (oldStr) { var ol = oldStr.split('\n'); if (ol[ol.length-1]===''){ol.pop();} parts.push('−'+ol.length); }
+        if (newStr) { var nl = newStr.split('\n'); if (nl[nl.length-1]===''){nl.pop();} parts.push('+'+nl.length); }
+        badge.textContent = parts.join(' ');
+        row.appendChild(badge);
+      }
       sec.appendChild(row);
+      // Inline diff block
+      if ((isEdit || isWrite) && (oldStr || newStr)) {
+        sec.appendChild(_renderDiffBlock(oldStr, newStr));
+      }
     });
     return sec;
   }
@@ -1050,7 +1151,11 @@
 
       case 'currentFile': {
         var newUri = msg.uri || null;
-        if (!currentFile || currentFile.uri !== newUri) { currentFileIncluded = false; }
+        // If requestContext returns null (no active editor at that moment), don't clear an
+        // explicitly-included file — the user just clicked the chat input, not closed their file.
+        if (!newUri && msg.from === 'request') { break; }
+        // Reset include flag only when switching to a genuinely different file
+        if (newUri && (!currentFile || currentFile.uri !== newUri)) { currentFileIncluded = false; }
         currentFile = newUri ? { name: msg.name || 'file', uri: newUri } : null;
         updateCurrentFileBtn();
         refreshInputTop();
@@ -1088,9 +1193,9 @@
       case 'updateSessions':    renderSessions(msg.sessions, msg.activeId); break;
 
       case 'updateChangeBar': {
-        if (!msg.files) { changeBar.hidden = true; break; }
-        var cbFiles = msg.files;
-        var cbParts = [cbFiles + ' file' + (cbFiles !== 1 ? 's' : '') + ' changed'];
+        if (!msg.files) { changeBar.hidden = true; cbFiles.innerHTML = ''; cbFiles.hidden = true; break; }
+        var cbCount = msg.files;
+        var cbParts = [cbCount + ' file' + (cbCount !== 1 ? 's' : '') + ' changed'];
         if (msg.added || msg.removed) {
           var linesParts = [];
           if (msg.added)   { linesParts.push('+' + msg.added); }
@@ -1098,6 +1203,21 @@
           cbParts.push(linesParts.join('  ') + ' lines');
         }
         cbText.textContent = cbParts.join('  ·  ');
+        // Render clickable file chips
+        cbFiles.innerHTML = '';
+        if (msg.filePaths && msg.filePaths.length) {
+          msg.filePaths.forEach(function(fp) {
+            var chip = document.createElement('button');
+            chip.className = 'cb-file-chip';
+            chip.title = fp;
+            chip.textContent = fp.split('/').pop() || fp;
+            chip.addEventListener('click', function() { post('openDiffFile', { filePath: fp }); });
+            cbFiles.appendChild(chip);
+          });
+          cbFiles.hidden = false;
+        } else {
+          cbFiles.hidden = true;
+        }
         changeBar.hidden = false;
         break;
       }

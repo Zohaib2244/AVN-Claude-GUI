@@ -169,6 +169,40 @@ body {
   direction: rtl; text-align: left; /* show deepest folder when truncated */
 }
 .ap-file.ap-active { opacity: 1; }
+.ap-diff-badge {
+  font-size: 9px; flex-shrink: 0;
+  color: var(--vscode-descriptionForeground); opacity: .7;
+}
+
+/* Inline diff blocks */
+.ap-diff-wrap { margin: 2px 0 4px 20px; }
+.ap-diff-block {
+  border-radius: 3px; overflow: hidden;
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 10px;
+  margin-bottom: 2px;
+}
+.ap-diff-removed { background: color-mix(in srgb, var(--vscode-charts-red, #f14c4c) 12%, transparent); border-left: 2px solid color-mix(in srgb, var(--vscode-charts-red, #f14c4c) 60%, transparent); }
+.ap-diff-added   { background: color-mix(in srgb, var(--vscode-charts-green, #4ec9b0) 12%, transparent); border-left: 2px solid color-mix(in srgb, var(--vscode-charts-green, #4ec9b0) 60%, transparent); }
+.ap-diff-line {
+  display: flex; align-items: flex-start; gap: 4px;
+  padding: 0 6px; line-height: 1.5;
+  white-space: pre; overflow: hidden;
+}
+.ap-diff-sign {
+  flex-shrink: 0; width: 10px; text-align: center; opacity: .6;
+  font-size: 10px;
+}
+.ap-diff-removed .ap-diff-sign { color: var(--vscode-charts-red,   #f14c4c); }
+.ap-diff-added   .ap-diff-sign { color: var(--vscode-charts-green, #4ec9b0); }
+.ap-diff-code { overflow: hidden; text-overflow: ellipsis; white-space: pre; flex: 1; }
+.ap-diff-more {
+  padding: 1px 6px 2px; font-size: 9px; opacity: .5; font-style: italic;
+}
+.ap-diff-expand {
+  font-size: 9px; opacity: .5; cursor: pointer; padding: 1px 2px;
+  text-align: right;
+}
+.ap-diff-expand:hover { opacity: .9; text-decoration: underline; }
 
 /* Command items */
 .ap-cmd {
@@ -430,13 +464,14 @@ body {
 
 /* ── Change bar ── */
 #change-bar {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  display: flex; flex-direction: column; gap: 6px;
   padding: 7px 12px; flex-shrink: 0;
   background: color-mix(in srgb, var(--vscode-charts-orange, #e8a87c) 10%, var(--vscode-sideBar-background, var(--vscode-editor-background)));
   border-top: 1px solid color-mix(in srgb, var(--vscode-charts-orange, #e8a87c) 35%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--vscode-charts-orange, #e8a87c) 35%, transparent);
 }
 #change-bar[hidden] { display: none; }
+#cb-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 #cb-text { font-size: 11px; opacity: .8; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #cb-btns { display: flex; gap: 5px; flex-shrink: 0; }
 #cb-keep {
@@ -452,6 +487,20 @@ body {
   transition: border-color .12s, color .12s;
 }
 #cb-undo:hover { border-color: var(--vscode-charts-red, #f14c4c); color: var(--vscode-charts-red, #f14c4c); }
+#cb-files { display: flex; flex-wrap: wrap; gap: 4px; }
+#cb-files[hidden] { display: none; }
+.cb-file-chip {
+  padding: 1px 8px; font-size: 10px; border-radius: 4px; cursor: pointer;
+  background: color-mix(in srgb, var(--vscode-charts-orange, #e8a87c) 20%, transparent);
+  color: var(--vscode-foreground); border: 1px solid color-mix(in srgb, var(--vscode-charts-orange, #e8a87c) 40%, transparent);
+  font-family: var(--vscode-editor-font-family, monospace);
+  transition: background .12s, border-color .12s;
+  max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cb-file-chip:hover {
+  background: color-mix(in srgb, var(--vscode-charts-orange, #e8a87c) 35%, transparent);
+  border-color: var(--vscode-charts-orange, #e8a87c);
+}
 
 /* ── Floating input card (3 separated regions) ── */
 #input-card {

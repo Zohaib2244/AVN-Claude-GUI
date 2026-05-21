@@ -65,6 +65,14 @@
       {
         "command": "claude.indexProject",
         "title": "Claude: Index Project"
+      },
+      {
+        "command": "avn.keepFileChanges",
+        "title": "AVN: Keep AI changes to this file"
+      },
+      {
+        "command": "avn.revertFileChanges",
+        "title": "AVN: Revert AI changes to this file"
       }
     ],
     "configuration": {

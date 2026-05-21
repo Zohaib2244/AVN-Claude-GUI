@@ -15,6 +15,7 @@ import {
 import { SessionManager } from './sessionManager';
 import { ProjectIndexer } from './projectIndexer';
 import { ClaudeViewProvider } from './claudeViewProvider';
+import { DiffCodeLensProvider } from './diffCodeLens';
 import { ChatStream } from './types';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -35,12 +36,26 @@ export function activate(context: vscode.ExtensionContext): void {
     sessionManager,
   );
 
+  // ─── Diff CodeLens (per-file Keep / Revert after AI edits) ─────────────────
+  const diffCodeLens = new DiffCodeLensProvider();
+  context.subscriptions.push(
+    diffCodeLens,
+    vscode.languages.registerCodeLensProvider({ pattern: '**' }, diffCodeLens),
+    vscode.commands.registerCommand('avn.keepFileChanges', (filePath: string) => {
+      viewProvider.keepFileChanges(filePath);
+    }),
+    vscode.commands.registerCommand('avn.revertFileChanges', (filePath: string) => {
+      viewProvider.revertFileChanges(filePath);
+    }),
+  );
+
   // ─── Sidebar Webview ────────────────────────────────────────────────────────
   const viewProvider = new ClaudeViewProvider(
     context.extensionUri,
     chatHandler,
     usageTracker,
     getWorkspaceRoot,
+    diffCodeLens,
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ClaudeViewProvider.viewType, viewProvider, {

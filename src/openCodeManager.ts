@@ -21,11 +21,13 @@ type OCEvent = Record<string, unknown> & {
   input?:      Record<string, unknown>;
   session_id?: string;
   sessionId?:  string;
+  sessionID?:  string;  // OpenCode v0.15+ uses capital ID
   tokens?:     { input?: number; output?: number; reasoning?: number };
   usage?:      { input_tokens?: number; output_tokens?: number; promptTokens?: number; completionTokens?: number };
   error?:      string;
   message?:    unknown;
   delta?:      { type?: string; text?: string; textDelta?: string };
+  part?:       { type?: string; text?: string; textDelta?: string; inputText?: string }; // OpenCode v0.15+ wraps content in `part`
   result?:     string;
   output?:     string;
   response?:   string;
@@ -111,8 +113,8 @@ export class OpenCodeManager implements vscode.Disposable {
         try {
           const ev = JSON.parse(trimmed) as OCEvent;
 
-          // Session ID (both casings)
-          const sid = ev.session_id ?? ev.sessionId;
+          // Session ID (all casings OpenCode has used across versions)
+          const sid = ev.session_id ?? ev.sessionId ?? ev.sessionID;
           if (typeof sid === 'string') { finalSession = sid; }
 
           // Token counts — handle multiple field name conventions
@@ -176,7 +178,7 @@ export class OpenCodeManager implements vscode.Disposable {
       if (buffer.trim()) {
         try {
           const ev = JSON.parse(buffer.trim()) as OCEvent;
-          const sid = ev.session_id ?? ev.sessionId;
+          const sid = ev.session_id ?? ev.sessionId ?? ev.sessionID;
           if (typeof sid === 'string') { finalSession = sid; }
           this.extractText(ev, opts);
         } catch { /* ignore */ }
@@ -188,6 +190,18 @@ export class OpenCodeManager implements vscode.Disposable {
   /** Extract and forward text from any known OpenCode/AI-SDK event format. */
   private extractText(ev: OCEvent, opts: OpenCodeInvokeOptions): void {
     const t = ev.type ?? '';
+
+    // ── Format 0: OpenCode v0.15+ — text/tool_use wrapped in `part` ─────────
+    if (ev.part && typeof ev.part === 'object') {
+      const p = ev.part as { type?: string; text?: string; textDelta?: string; name?: string; input?: Record<string, unknown> };
+      if ((p.type === 'text' || t === 'text') && typeof p.text === 'string' && p.text) {
+        opts.onText(p.text); return;
+      }
+      if (typeof p.textDelta === 'string' && p.textDelta) { opts.onText(p.textDelta); return; }
+      if (p.type === 'tool-use' && typeof p.name === 'string') {
+        opts.onTool(p.name, p.input ?? {}); return;
+      }
+    }
 
     // ── Format 1: direct `text` field ──────────────────────────────────────
     if (typeof ev.text === 'string' && ev.text) { opts.onText(ev.text); return; }

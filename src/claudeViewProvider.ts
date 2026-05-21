@@ -9,6 +9,7 @@ import { ChatStream, ThinkingBudget, SymbolRef, BackendType, StoredMessage } fro
 import { UsageTracker } from './usageTracker';
 import { DroppedItem, getActiveEditorContext } from './contextAssembler';
 import { SessionManager } from './sessionManager';
+import { DiffCodeLensProvider } from './diffCodeLens';
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.avif', '.tiff']);
 const IMAGE_MIME: Record<string, string> = {
@@ -38,6 +39,7 @@ interface WebviewMessage {
   symbolName?: string;
   backend?: string;
   rawText?: string;
+  filePath?: string;
 }
 
 export class ClaudeViewProvider implements vscode.WebviewViewProvider {
@@ -50,7 +52,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
   private _tempFiles: string[] = [];
   private _fileCache: vscode.Uri[] | undefined;
   private _fileCacheTs = 0;
-  // Tracks unaccepted file edits across consecutive prompts
+  // Tracks unaccepted file edits across consecutive prompts (files = absolute paths)
   private _pendingChanges: { firstHash: string; files: Set<string>; added: number; removed: number } | null = null;
 
   constructor(
@@ -58,6 +60,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     private readonly chatHandler: ChatHandler,
     private readonly usageTracker: UsageTracker,
     private readonly getWorkspaceRoot: () => string | undefined,
+    private readonly diffCodeLens: DiffCodeLensProvider,
   ) {}
 
   private get _sessionManager(): SessionManager { return this.chatHandler.getSessionManager(); }
@@ -78,7 +81,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
       if (!this._isReady) { return; }
       const name = editor ? path.basename(editor.document.fileName) : null;
       const uri  = editor ? vscode.Uri.file(editor.document.fileName).toString() : null;
-      this._post({ type: 'currentFile', name, uri });
+      this._post({ type: 'currentFile', name, uri, from: 'change' });
     }, null, disposables);
 
     webviewView.onDidDispose(() => { disposables.forEach(d => d.dispose()); this._cleanupTempFiles(); this._view = undefined; this._isReady = false; this._pendingPosts = []; });
@@ -90,6 +93,47 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
     this._post({ type: 'addUserMessage', text: displayText });
     await this.runRequest(fullPrompt, undefined, root);
+  }
+
+  /** Called by the CodeLens "Keep" button — dismiss lens for this file, no file changes. */
+  public keepFileChanges(absolutePath: string): void {
+    this.diffCodeLens.removeFile(absolutePath);
+    this._pendingChanges?.files.delete(absolutePath);
+    if (this._pendingChanges?.files.size === 0) {
+      this._pendingChanges = null;
+      this._post({ type: 'updateChangeBar', files: 0 });
+    }
+  }
+
+  /** Called by the CodeLens "Revert file" button — reset this file to pre-AI state. */
+  public async revertFileChanges(absolutePath: string): Promise<void> {
+    const root = this.getWorkspaceRoot();
+    if (!root || !this._pendingChanges) { return; }
+    const relPath   = path.relative(root, absolutePath);
+    const firstHash = this._pendingChanges.firstHash;
+
+    await new Promise<void>(resolve => {
+      cp.exec(`git checkout ${firstHash} -- "${relPath}"`, { cwd: root }, (err) => {
+        if (err) {
+          // File was created by AI (didn't exist at firstHash) — delete it
+          try { fs.unlinkSync(absolutePath); } catch { /* ignore */ }
+        }
+        resolve();
+      });
+    });
+
+    this.diffCodeLens.removeFile(absolutePath);
+    this._pendingChanges.files.delete(absolutePath);
+
+    if (this._pendingChanges.files.size === 0) {
+      this._pendingChanges = null;
+      this._post({ type: 'updateChangeBar', files: 0 });
+    } else {
+      const stats = await this._getDiffStats(this._pendingChanges.firstHash, root);
+      this._pendingChanges.added   = stats.added;
+      this._pendingChanges.removed = stats.removed;
+      this._post({ type: 'updateChangeBar', files: stats.files.length, added: stats.added, removed: stats.removed, filePaths: stats.files });
+    }
   }
 
   public async showUsage(): Promise<void> {
@@ -160,6 +204,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
           const clearSid = this.chatHandler.getActiveSessionId();
           if (clearSid) { this._sessionManager.clearMessages(clearSid); }
           this._pendingChanges = null;
+          this.diffCodeLens.clearAll();
           this._post({ type: 'clearMessages' });
           this._post({ type: 'updateChangeBar', files: 0 });
           if (root) { this._pushSessions(root); }
@@ -193,6 +238,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         if (!root) { break; }
         this.chatHandler.createNewSession(root);
         this._pendingChanges = null;
+        this.diffCodeLens.clearAll();
         this._post({ type: 'clearMessages' });
         this._post({ type: 'updateChangeBar', files: 0 });
         this._post(this._fullState());
@@ -205,6 +251,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         const s = this.chatHandler.switchSession(root, msg.sessionId);
         if (s) {
           this._pendingChanges = null;
+          this.diffCodeLens.clearAll();
           this._post({ type: 'clearMessages' });
           this._post({ type: 'updateChangeBar', files: 0 });
           this._post(this._fullState());
@@ -366,7 +413,7 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
           this._post({ type: 'contextInfo', kind: 'none' });
         }
         const curFile = selection || activeFile;
-        this._post({ type: 'currentFile', name: curFile ? path.basename(curFile.filePath) : null, uri: curFile ? vscode.Uri.file(curFile.filePath).toString() : null });
+        this._post({ type: 'currentFile', name: curFile ? path.basename(curFile.filePath) : null, uri: curFile ? vscode.Uri.file(curFile.filePath).toString() : null, from: 'request' });
         break;
       }
 
@@ -467,17 +514,31 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
 
       case 'acceptChanges':
         this._pendingChanges = null;
+        this.diffCodeLens.clearAll();
         break;
 
       case 'undoAllChanges': {
         if (!this._pendingChanges || !root) { break; }
         const undoHash = this._pendingChanges.firstHash;
         this._pendingChanges = null;
+        this.diffCodeLens.clearAll();
         const ok = await this._gitRestore(undoHash, root);
         if (ok) {
           vscode.window.showInformationMessage('All changes reverted to before this sequence of prompts.');
         } else {
           vscode.window.showErrorMessage('Failed to revert changes. Make sure the workspace is a git repository.');
+        }
+        break;
+      }
+
+      case 'openDiffFile': {
+        if (!root || !msg.filePath) { break; }
+        const absPath = path.join(root, msg.filePath);
+        const fileUri = vscode.Uri.file(absPath);
+        try {
+          await vscode.commands.executeCommand('git.openChange', fileUri);
+        } catch {
+          await vscode.window.showTextDocument(fileUri, { preview: true });
         }
         break;
       }
@@ -640,11 +701,13 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
 
       // Check if any files changed since the baseline and update the change bar
       if (checkpointHash && root) {
-        const baseHash = this._pendingChanges?.firstHash ?? checkpointHash;
-        const stats    = await this._getDiffStats(baseHash, root);
+        const baseHash  = this._pendingChanges?.firstHash ?? checkpointHash;
+        const stats     = await this._getDiffStats(baseHash, root);
         if (stats.files.length > 0) {
-          this._pendingChanges = { firstHash: baseHash, files: new Set(stats.files), added: stats.added, removed: stats.removed };
-          this._post({ type: 'updateChangeBar', files: stats.files.length, added: stats.added, removed: stats.removed });
+          const absPaths  = stats.files.map(f => path.join(root, f));
+          this._pendingChanges = { firstHash: baseHash, files: new Set(absPaths), added: stats.added, removed: stats.removed };
+          this.diffCodeLens.setFiles(absPaths);
+          this._post({ type: 'updateChangeBar', files: stats.files.length, added: stats.added, removed: stats.removed, filePaths: stats.files });
         }
       }
     }
@@ -903,11 +966,14 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
 
   <!-- Change bar — appears when Claude has made file edits -->
   <div id="change-bar" hidden>
-    <span id="cb-text"></span>
-    <div id="cb-btns">
-      <button id="cb-keep">Keep</button>
-      <button id="cb-undo">Undo all</button>
+    <div id="cb-top">
+      <span id="cb-text"></span>
+      <div id="cb-btns">
+        <button id="cb-keep">Keep all</button>
+        <button id="cb-undo">Undo all</button>
+      </div>
     </div>
+    <div id="cb-files" hidden></div>
   </div>
 
   <!-- Floating input card (3 separated regions) -->
