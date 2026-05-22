@@ -1,318 +1,188 @@
 # AVN Chat
 
-A custom standalone VS Code sidebar chat extension that supports **Claude Code CLI** and **OpenCode** as backends — use either one, or both, switching freely per session.
+A VS Code **Chat Participant** that routes your messages through the **Claude Code CLI** or the **OpenCode CLI**. Type `@avn …` in the built-in chat panel.
+
+> **Branch note:** this is the `feat/vscode-chat-api` rewrite — the custom sidebar is gone and `@avn` lives inside VS Code's native chat panel. For the previous webview-based implementation, see the `main` branch.
 
 ---
 
-## Backends: Claude Code vs OpenCode
+## Why this rewrite
 
-| Feature | Claude Code | OpenCode |
-| ------- | ----------- | -------- |
-| Provider | Anthropic only | 75+ providers (Anthropic, OpenAI, Gemini, Groq, DeepSeek, Ollama…) |
-| Free tier | Anthropic usage limits apply | Many models are free (marked ★ in the model picker) |
-| Tool use / file editing | Full agent mode | Full agent mode |
-| Session resume | `--resume <id>` | `--session <id>` |
-| Extended Thinking | Supported on opus models | Not supported |
-| Required | No — either backend is optional | No — either backend is optional |
+The previous version reimplemented ~3,500 LOC of UI: file picker, image paste, model picker, sessions, change bar, slash commands. Every one had edge cases. This port hands all of that to VS Code's stable Chat Participant API (VS Code 1.94+) and keeps only the CLI wrappers.
 
-**You can install just one, both, or neither.** The extension starts up regardless and shows a clear setup guide in the chat when a backend is not found.
+| | Old | New |
+|---|---|---|
+| Chat panel UI | Custom webview | VS Code native |
+| File / image refs | `+` button + `@name` | Built-in `#file`, drag-drop, paste |
+| Sessions | Hand-rolled `SessionManager` | VS Code chat history |
+| Slash commands | Custom dropdown | `/cmd` in chat input |
+| Streaming | `postMessage` + DOM | `ChatResponseStream.markdown()` |
+| Diff review | Custom hunk decorator + lens | `vscode.diff` editor + Source Control panel |
+| Code deleted | — | ~3,800 LOC |
 
 ---
 
-## Setup — Claude Code
+## Setup
 
+You need at least one CLI installed. The extension activates regardless.
+
+### Claude Code
 ```bash
-# 1. Install the CLI
 npm install -g @anthropic-ai/claude-code
-
-# 2. Authenticate (run once — opens a browser)
-claude login
-
-# 3. Verify
-claude --version
+claude login        # opens browser, sets up auth
+claude --version    # verify
 ```
 
-`claude login` handles authentication. No manual API key setup needed.
-
----
-
-## Setup — OpenCode
-
+### OpenCode
 ```bash
-# 1. Install the CLI
 npm install -g opencode-ai
-
-# 2. Verify
 opencode --version
 ```
 
-**API keys:** OpenCode reads them from environment variables. Set the key for the provider(s) you want to use:
-
-| Provider | Environment variable |
-|----------|---------------------|
-| Anthropic | `ANTHROPIC_API_KEY` |
-| OpenAI | `OPENAI_API_KEY` |
-| Google Gemini | `GOOGLE_GENERATIVE_AI_API_KEY` |
-| Groq | `GROQ_API_KEY` |
-| DeepSeek | `DEEPSEEK_API_KEY` |
-| OpenRouter | `OPENROUTER_API_KEY` |
-
-Add the key to your shell profile (`~/.zshrc` or `~/.bashrc`):
-
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-```
-
-Then restart VS Code so it picks up the new environment variable.
-
-**Viewing available models (including free ones):**
-
-```bash
-opencode models
-```
-
-Or use the **+ Add model** button in the model picker — it fetches all models from the OpenCode CLI, detects which ones are free (cost = $0), and pre-selects them for you.
+Then export an API key for whichever provider(s) you want to use (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`) and restart VS Code.
 
 ---
 
-## Installation
+## Usage
 
-### From VSIX (recommended)
+1. Open VS Code's chat panel (`Cmd+Ctrl+I` / `Ctrl+Alt+I`, or click the chat icon in the title bar)
+2. Type `@avn <your message>` — or press **`Cmd+L`** / **`Ctrl+L`** to open chat with `@avn ` pre-filled
+3. After the first message, you can drop the prefix; VS Code remembers the active participant for the rest of the session
 
-1. Download `avn-claude-gui-x.x.x.vsix`
-2. Extensions panel (`Cmd+Shift+X`) → `···` menu → **Install from VSIX…**
+### Picking the model
 
-Or via terminal:
+The status bar shows the current model (e.g. `🚀 claude-sonnet-4-6`). Click it to open a QuickPick with separator sections for Claude and OpenCode models. Selecting a model also flips the backend if needed.
 
-```bash
-code --install-extension avn-claude-gui-x.x.x.vsix
-```
+If you have no OpenCode models configured, the picker offers **AVN: Add OpenCode Model** — runs `opencode models --verbose`, parses the catalogue, and shows a multi-select QuickPick with free models pre-checked (★).
 
-### From source
+### Modes
 
-```bash
-git clone https://github.com/Zohaib2244/AVN-Claude-GUI
-cd AVN-Claude-GUI
-npm install
-npm run compile
-# Press F5 in VS Code to run the Extension Development Host
-```
+Three modes, click the status-bar item to switch:
 
----
+| Mode | Behavior |
+|---|---|
+| Ask before edits | Claude CLI invoked without `--dangerously-skip-permissions` |
+| Edit automatically | YOLO — applies edits without prompting |
+| Plan mode | Prepends a Plan-only instruction; the AI does not write files |
 
-## Getting Started
+### Extended Thinking (Claude opus models)
 
-1. Click the **✦ star icon** in the Activity Bar
-2. The AVN Chat panel opens
-3. Click the model name button in the bottom bar → select **[Claude]** or **[OpenCode]** tab → pick a model
-4. Send a message with **Enter**
+Shows as a third status-bar item only when the active model is in `avn.thinkingModels`. Click → QuickPick (Off / Low / Medium / High / Max).
 
-If a backend is not installed, you will see a setup guide directly in the chat instead of a generic error.
+### Slash commands
 
----
+| Command | What |
+|---|---|
+| `/fix`     | Fix issues in the active editor file |
+| `/explain` | Explain the active editor file |
+| `/index`   | Build `.claude/project-context.md` |
+| `/model`   | Switch model |
+| `/mode`    | Switch mode |
+| `/think`   | Toggle thinking budget |
+| `/help`    | List all commands |
 
-## Switching Backends
+### File and image attachments
 
-Click the **model name button** in the bottom bar to open the model picker. A tab strip at the top lets you switch between Claude and OpenCode:
+All native to VS Code chat — no custom UI:
 
-```text
-┌─────────────────────────────┐
-│ [Claude]  [OpenCode]        │  ← click to switch
-├─────────────────────────────┤
-│ ✓ sonnet-4-6                │
-│   opus-4-7                  │
-└─────────────────────────────┘
-```
+- **`#file:path/to/foo.ts`** in the chat input attaches a file
+- **Drag-drop** files from the explorer
+- **`Cmd+V`** pastes images
+- The active editor's current file/selection is available via `#editor` / `#selection`
 
-Switching tabs:
+The handler reads `request.references` and inlines each as `<file path="…">…</file>` (or `<selection …>` / `<context …>`) in the prompt to the CLI.
 
-- Automatically selects the first model for that backend
-- Persists per session — each session remembers its own backend and model
-- Hides Extended Thinking controls for OpenCode (not supported)
+### Reviewing edits
 
-**Sessions are backend-independent.** You can have some sessions on Claude and others on OpenCode. The session panel shows all sessions regardless of backend.
+When the AI finishes editing files, **a diff editor opens for each changed file** showing HEAD vs working tree. If more than 5 files changed, the extension asks first ("Open all 12? / Show list / Skip").
 
----
-
-## Adding OpenCode Models
-
-OpenCode starts with no models pre-configured. To add models:
-
-1. Switch to the **OpenCode** tab in the model picker
-2. Click **+ Add model** at the bottom
-3. The extension runs `opencode models --verbose` and shows a multi-select list
-4. Free models are detected automatically and pre-selected (marked ★)
-5. Select the ones you want and confirm
-
-Models are saved to your global VS Code settings (`claude.openCodeModels`) and available in all workspaces.
-
-To remove a model: hover over it in the picker and click **×**.
-
----
-
-## Features
-
-### Chat
-
-| Action | How |
-|--------|-----|
-| Send message | `Enter` |
-| New line | `Shift+Enter` |
-| Stop generation | Click the **■ red stop button** or press `Escape` while running |
-| Clear conversation | 🗑 button in header or `/clear` |
-
-### Live Activity View
-
-While the agent is working, the chat shows a live panel:
-
-- **📋 Tasks** — the TodoWrite task list with ✓ / ⟳ / ○ status per item and N/M progress count
-- **📂 Files** — every file read (↓ blue), written (↑ green), or edited (± orange)
-- **⚡ Commands** — each shell command with a `$` prompt
-- **🔍 Search** — grep, web fetch, and web search queries
-
-The currently running tool pulses with a yellow left border. At the end, the panel collapses into a summary.
-
-The initial thinking state shows **"Nutting All Over the Codebase..."** with animated dots.
-
-### Smart Symbol Paste
-
-Copy any identifier from a source file (`fetchUserData`, `MyClass`, etc.) and paste it into the chat. If the workspace symbol provider resolves it, a reference chip appears showing the file and line number. The definition snippet is automatically included as context in your next message.
-
-### File References
-
-| Action | How |
-|--------|-----|
-| Add files | Click **+** or type **@filename** |
-| Include current editor file | Click the **📄 filename** chip (turns blue when included) |
-| Drop files | Drag from the VS Code Explorer |
-| Paste image | `Cmd/Ctrl+V` — thumbnail chip appears |
-| Remove one | Click **×** on any chip |
-| Remove all | `Escape` (when no menus are open) |
-
-### Sessions
-
-Click **≡** in the header. Each session stores:
-
-- The backend (Claude or OpenCode) and model used
-- The full chat history, persisted across VS Code restarts
-- The backend session ID for conversation continuity (`--resume` / `--session`)
-
-Switching sessions restores the full message history for that session. `/clear` wipes the display history and resets the conversation context.
-
-### Modes (bottom bar `</>` button)
-
-| Mode | Behaviour |
-|------|-----------|
-| Ask before edits | Agent asks permission before each file change |
-| Edit automatically | Agent edits files without asking |
-| Plan mode | Agent plans only — does **not** write any files |
-
-**Extended Thinking** (Claude only): toggle on in the Modes picker and choose Low / Medium / High effort. Only effective on models that support it (e.g. `claude-opus-4-7`).
-
-### Token Usage and Limits
-
-- The status bar shows `X.Xk tok` (daily usage). Click it for the full breakdown.
-- Set `claude.dailyTokenLimit` in settings to cap daily usage. At 90%: the status bar turns orange with a ⚠ warning and a one-time popup fires.
-- When the limit is reached, new requests are blocked with a clear message.
-
-### Commands (`/` menu)
-
-| Command | What it does |
-|---------|-------------|
-| `/fix` | Fix issues in the active file |
-| `/explain` | Explain the active file |
-| `/index` | Build `.claude/project-context.md` for the project |
-| `/help` | Show available commands |
-| `/clear` | Clear conversation and reset session |
-
-### Checkpoint Restore
-
-Hover over any assistant message to reveal **↩ restore checkpoint** — runs `git reset --hard` to the state before that prompt. Requires a git repository.
-
-### MCP Servers (⚙ button)
-
-Manage Model Context Protocol servers from `~/.claude.json`. Toggle, remove, or add new servers. Changes take effect on the next session.
+Use VS Code's built-in **Source Control** panel to Keep (stage/commit) or Discard (revert) per file. No custom Keep/Undo UI — VS Code's is more mature.
 
 ---
 
 ## Configuration
 
-Search for **AVN Chat** in VS Code Settings (`Cmd+,`):
+Search **AVN** in VS Code Settings:
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `claude.models` | `[sonnet-4-6, opus-4-7, ...]` | Claude models shown in the picker |
-| `claude.openCodeModels` | `[]` | OpenCode models (managed via the + Add model UI) |
-| `claude.defaultModel` | `claude-sonnet-4-6` | Default model for new sessions |
-| `claude.dailyTokenLimit` | `0` (unlimited) | Daily token budget (0 = no limit) |
-| `claude.maxFolderContextKb` | `500` | Max KB of folder content when attaching a folder |
-| `claude.thinkingModels` | `[opus-4-7, opus-4-5]` | Claude models that support Extended Thinking |
+|---|---|---|
+| `avn.claudeModels`    | `[sonnet-4-6, opus-4-7, …]` | Claude models in the picker |
+| `avn.openCodeModels`  | `[]` | OpenCode models (managed via the + Add UI) |
+| `avn.defaultModel`    | `claude-sonnet-4-6` | Default on first run |
+| `avn.thinkingModels`  | `[opus-4-7, opus-4-5]` | Models supporting Extended Thinking |
+| `avn.completionDebounceMs` | `500` | Debounce for inline ghost-text completions |
 
 ---
 
-## Keyboard Shortcuts
+## What's gone (vs the old `main` branch)
 
-| Shortcut | Action |
-|----------|--------|
-| `Enter` | Send message |
-| `Shift+Enter` | New line (continues numbered lists and blockquotes) |
-| `Escape` | Stop generation (if running) / clear references / close menus |
-| `/` on empty input | Open commands menu |
-| `@` while typing | Open file picker (inline search) |
-| `↑` / `↓` | Navigate picker lists |
+These features were dropped because VS Code's chat API covers them better (or they were not worth porting):
 
----
+- Custom sidebar webview, model-picker UI, sessions panel, change bar, file picker
+- Daily token tracking and limit warning
+- Symbol auto-paste references (VS Code's `#symbol` is built-in)
+- MCP server toggle UI (VS Code 1.94+ has built-in MCP support)
+- Checkpoint restore (`↩ restore`) — removed; rely on git
+- Custom per-hunk inline diff decorations and Keep/Undo CodeLens — replaced by the native diff editor + Source Control panel
 
-## Troubleshooting
-
-**"Claude Code CLI not found"**
-The setup guide appears inline in the chat. Quick fix: `npm install -g @anthropic-ai/claude-code && claude login`. Reload VS Code after.
-
-**"OpenCode CLI not found"**
-Inline setup guide appears in the chat. Quick fix: `npm install -g opencode-ai`. Set the API key env var for your provider and reload VS Code.
-
-**OpenCode response never arrives / spins forever**
-OpenCode v0.15+ has a known hang-on-exit bug. The extension has a 5-minute hard timeout. If you hit this consistently, check the **OpenCode (Debug)** output channel — it logs every raw NDJSON line from OpenCode's output. File an issue with those logs.
-
-**Claude auth error**
-Run `claude login` in a terminal and follow the browser prompt.
-
-**Checkpoint restore failed**
-Workspace must be a git repo (`git init` if needed). Uncommitted merge conflicts will block the reset.
-
-**Model picker shows "avnchat"**
-Extension JS failed to initialise. Open Dev Tools (`Help → Toggle Developer Tools`), check the console for errors, then `Cmd+Shift+P → Reload Window`.
+The right-click code actions (**Claude: Fix this / Explain this / Refactor / Add Tests / Add Docs / Find Bugs / Custom**) and inline ghost-text completions are kept — they're unrelated to chat.
 
 ---
 
 ## Architecture
 
-```text
+```
 src/
-  extension.ts          — activation, wires up all managers
-  claudeViewProvider.ts — WebviewViewProvider, message bridge, MCP, history persistence
-  chatHandler.ts        — backend routing, session state, mode/effort
-  processManager.ts     — Claude Code CLI (stream-json NDJSON)
-  openCodeManager.ts    — OpenCode CLI (--format json NDJSON, 5-min hard timeout)
-  sessionManager.ts     — session CRUD + message history (workspaceState)
-  contextAssembler.ts   — builds prompts from files, selections, symbol refs
-  statusBar.ts          — status dot + token count + 90% limit warning
-  usageTracker.ts       — session / daily / weekly token accounting
-  types.ts              — shared interfaces
-
-media/
-  chat.js   — webview frontend (vanilla JS, CSP-safe, no frameworks)
-  chat.css  — all webview styles
-  icons/    — file-type icons for the @ picker
+  extension.ts              ← activate, register participant + commands
+  chatParticipant.ts        ← handler: ChatRequest → backend → ChatResponseStream
+  backendController.ts      ← model / backend / mode / thinking state + status bar
+  diffViewer.ts             ← OriginalContentProvider + showChangedFileDiffs()
+  openCodeModelBrowser.ts   ← QuickPick for opencode models --verbose
+  processManager.ts         ← Claude Code CLI wrapper (kept from before)
+  openCodeManager.ts        ← OpenCode CLI wrapper (kept from before)
+  projectIndexer.ts         ← /index command implementation
+  completionProvider.ts     ← inline ghost-text suggestions
+  codeActionProvider.ts     ← right-click menu items
+  statusBar.ts              ← AVN spinner (idle/thinking/error)
+  types.ts                  ← BackendType, AvnMode, ThinkingBudget, ChatStream
 ```
 
 Message flow:
-
-```text
-User types → chat.js postMessage → claudeViewProvider.handleMessage()
-  → chatHandler.runBackend()
-      → Claude:    processManager.invoke()  [claude -p --output-format stream-json]
-      → OpenCode:  openCodeManager.invoke() [opencode run --format json]
-  → streams text chunks → webview renders markdown
-  → on done: message saved to workspaceState
 ```
+User types @avn …  →  VS Code chat panel  →  AvnChatParticipant.handle()
+   → resolveReferences(request.references)  → builds <file>/<selection> blocks
+   → BackendController.getBackend()  → routes to:
+       processManager.invoke()   (claude  -p --output-format stream-json)
+       openCodeManager.invoke()  (opencode run --format json)
+   → stream text via response.markdown(), tools via response.progress()
+   → on turn end: showChangedFileDiffs() opens vscode.diff for each changed file
+```
+
+---
+
+## Building locally
+
+```bash
+npm install
+npm run compile
+# F5 in VS Code to launch the Extension Development Host
+```
+
+Package a VSIX:
+```bash
+npm run package
+```
+
+---
+
+## Troubleshooting
+
+**`@avn` doesn't appear in the chat picker** — make sure VS Code is ≥ 1.94 and reload the window after installing.
+
+**"Claude Code CLI not found"** — inline setup guide appears in chat. Run `npm install -g @anthropic-ai/claude-code && claude login`.
+
+**"OpenCode CLI not found"** — inline setup guide appears in chat. Run `npm install -g opencode-ai` and export the relevant `*_API_KEY`.
+
+**OpenCode response hangs** — known v0.15+ exit bug; `openCodeManager` has a 5-min hard timeout. Check Output → "OpenCode (Debug)" for raw NDJSON.
+
+**The diff editor doesn't open after an AI turn** — the diff viewer uses `git diff --name-only HEAD`. Workspace must be a git repo (`git init` if needed).

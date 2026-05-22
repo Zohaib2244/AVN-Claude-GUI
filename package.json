@@ -24,7 +24,16 @@
         "name": "avn",
         "fullName": "AVN",
         "description": "Claude Code or OpenCode CLI — switch backends from the status bar",
-        "isSticky": true
+        "isSticky": true,
+        "commands": [
+          { "name": "fix",     "description": "Fix issues in the active file" },
+          { "name": "explain", "description": "Explain the active file" },
+          { "name": "index",   "description": "Build .claude/project-context.md" },
+          { "name": "model",   "description": "Switch model" },
+          { "name": "mode",    "description": "Switch mode (Ask / Auto / Plan)" },
+          { "name": "think",   "description": "Toggle extended thinking (Claude only)" },
+          { "name": "help",    "description": "List available commands" }
+        ]
       }
     ],
     "commands": [

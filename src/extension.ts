@@ -5,6 +5,8 @@ import { OpenCodeManager } from './openCodeManager';
 import { StatusBarManager } from './statusBar';
 import { BackendController } from './backendController';
 import { AvnChatParticipant } from './chatParticipant';
+import { addOpenCodeModelsFlow } from './openCodeModelBrowser';
+import { OriginalContentProvider, showChangedFileDiffs } from './diffViewer';
 import { InlineCompletionProvider } from './completionProvider';
 import {
   ClaudeCodeActionProvider,
@@ -22,9 +24,26 @@ export function activate(context: vscode.ExtensionContext): void {
   const controller      = new BackendController(context);
   const participant     = new AvnChatParticipant(processManager, openCodeManager, controller, statusBar);
 
+  // ─── Diff content provider (serves HEAD: content for vscode.diff) ──────────
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(
+      OriginalContentProvider.scheme,
+      new OriginalContentProvider(),
+    ),
+  );
+
   // ─── Chat Participant ──────────────────────────────────────────────────────
   const chatPart = vscode.chat.createChatParticipant('avn.chat', (req, ctx, res, tok) => participant.handle(req, ctx, res, tok));
   chatPart.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'claude-icon.svg');
+  chatPart.followupProvider = {
+    provideFollowups(_result, _ctx, _tok) {
+      return [
+        { prompt: '/help',    label: 'See available commands', command: 'help' },
+        { prompt: '/model',   label: 'Change model',           command: 'model' },
+        { prompt: '/mode',    label: 'Change mode',            command: 'mode' },
+      ];
+    },
+  };
 
   context.subscriptions.push(chatPart, processManager, openCodeManager, statusBar, controller);
 
@@ -38,9 +57,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('avn.switchMode',  () => pickMode(controller)),
     vscode.commands.registerCommand('avn.switchThinking', () => pickThinking(controller)),
 
-    vscode.commands.registerCommand('avn.addOpenCodeModel', async () => {
-      vscode.window.showInformationMessage('Add-OpenCode-model UI coming in next commit.');
-    }),
+    vscode.commands.registerCommand('avn.addOpenCodeModel', () => addOpenCodeModelsFlow()),
 
     vscode.commands.registerCommand('avn.indexProject', async () => {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;

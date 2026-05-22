@@ -3,6 +3,7 @@ import { ProcessManager, isAuthError } from './processManager';
 import { OpenCodeManager } from './openCodeManager';
 import { BackendController } from './backendController';
 import { StatusBarManager } from './statusBar';
+import { showChangedFileDiffs } from './diffViewer';
 import { ClaudeStreamEvent } from './types';
 
 const CLAUDE_SETUP = [
@@ -72,6 +73,12 @@ export class AvnChatParticipant {
       return;
     }
 
+    // ── Slash command dispatch ────────────────────────────────────────────
+    if (request.command) {
+      const handled = await this._handleSlashCommand(request, root, response, token);
+      if (handled) { return; }
+    }
+
     // Build the prompt: references first, then the user's message
     const refContext   = await this._resolveReferences(request.references);
     const userPrompt   = request.prompt.trim();
@@ -90,9 +97,67 @@ export class AvnChatParticipant {
       } else {
         await this._runClaude(fullPrompt, root, response, token, chatKey);
       }
+      // After the AI finishes, surface every file it changed via VS Code's diff editor.
+      if (!token.isCancellationRequested) {
+        await showChangedFileDiffs(root);
+      }
     } finally {
       this.statusBar.setStatus('idle');
     }
+  }
+
+  /**
+   * Returns true if the command was fully handled (no backend invocation needed).
+   * /fix and /explain return false because they augment the prompt and continue.
+   */
+  private async _handleSlashCommand(
+    request:  vscode.ChatRequest,
+    root:     string,
+    response: vscode.ChatResponseStream,
+    _token:   vscode.CancellationToken,
+  ): Promise<boolean> {
+    switch (request.command) {
+      case 'help':
+        response.markdown([
+          '**AVN slash commands:**',
+          '',
+          '| Command | Action |',
+          '|---|---|',
+          '| `/fix`     | Fix issues in the active editor file |',
+          '| `/explain` | Explain the active editor file |',
+          '| `/index`   | Build `.claude/project-context.md` |',
+          '| `/model`   | Switch model |',
+          '| `/mode`    | Switch mode: Ask / Auto / Plan |',
+          '| `/think`   | Toggle extended thinking budget (Claude only) |',
+          '| `/help`    | Show this list |',
+        ].join('\n'));
+        return true;
+
+      case 'model':    await vscode.commands.executeCommand('avn.switchModel');    return true;
+      case 'mode':     await vscode.commands.executeCommand('avn.switchMode');     return true;
+      case 'think':    await vscode.commands.executeCommand('avn.switchThinking'); return true;
+      case 'index':    await vscode.commands.executeCommand('avn.indexProject');
+                       response.markdown('Indexing started — see the notification for progress.');
+                       return true;
+
+      case 'fix':
+      case 'explain': {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) { response.markdown('**No active file.** Open a file first.'); return true; }
+        const doc = editor.document;
+        const verb = request.command === 'fix' ? 'Fix this file' : 'Explain this file';
+        // Inject the file content into the request — fall through to backend by mutating prompt.
+        // We achieve this by directly invoking the backend here with the augmented prompt.
+        const fullPrompt = `<instruction>${verb}</instruction>\n<file path="${doc.fileName}" lang="${doc.languageId}">\n${doc.getText()}\n</file>`;
+        if (this.controller.getBackend() === 'opencode') {
+          await this._runOpenCode(fullPrompt, root, response, _token, this._chatKey({ history: [] } as vscode.ChatContext));
+        } else {
+          await this._runClaude(fullPrompt, root, response, _token, this._chatKey({ history: [] } as vscode.ChatContext));
+        }
+        return true;
+      }
+    }
+    return false;
   }
 
   private _chatKey(chatContext: vscode.ChatContext): string {
