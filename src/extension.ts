@@ -3,8 +3,8 @@ import * as vscode from 'vscode';
 import { ProcessManager } from './processManager';
 import { OpenCodeManager } from './openCodeManager';
 import { StatusBarManager } from './statusBar';
-import { UsageTracker } from './usageTracker';
-import { ChatHandler } from './chatHandler';
+import { BackendController } from './backendController';
+import { AvnChatParticipant } from './chatParticipant';
 import { InlineCompletionProvider } from './completionProvider';
 import {
   ClaudeCodeActionProvider,
@@ -12,89 +12,75 @@ import {
   getDiagnosticsText,
   getSurroundingCode,
 } from './codeActionProvider';
-import { SessionManager } from './sessionManager';
 import { ProjectIndexer } from './projectIndexer';
-import { ClaudeViewProvider } from './claudeViewProvider';
-import { DiffCodeLensProvider } from './diffCodeLens';
-import { DiffDecorator } from './diffDecorator';
-import { ChatStream } from './types';
+import { ChatStream, AvnMode, ThinkingBudget } from './types';
 
 export function activate(context: vscode.ExtensionContext): void {
-  const getWorkspaceRoot = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const processManager  = new ProcessManager();
+  const openCodeManager = new OpenCodeManager();
+  const statusBar       = new StatusBarManager();
+  const controller      = new BackendController(context);
+  const participant     = new AvnChatParticipant(processManager, openCodeManager, controller, statusBar);
 
-  const processManager    = new ProcessManager();
-  const openCodeManager   = new OpenCodeManager();
-  const usageTracker      = new UsageTracker(context);
-  const statusBar         = new StatusBarManager(usageTracker);
-  const sessionManager    = new SessionManager(context);
-  const chatHandler       = new ChatHandler(
-    processManager,
-    openCodeManager,
-    statusBar,
-    usageTracker,
-    context,
-    getWorkspaceRoot,
-    sessionManager,
-  );
+  // ─── Chat Participant ──────────────────────────────────────────────────────
+  const chatPart = vscode.chat.createChatParticipant('avn.chat', (req, ctx, res, tok) => participant.handle(req, ctx, res, tok));
+  chatPart.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'claude-icon.svg');
 
-  // ─── Diff visualization (decorations + per-hunk CodeLens) ──────────────────
-  const diffDecorator = new DiffDecorator();
-  const diffCodeLens  = new DiffCodeLensProvider(diffDecorator);
+  context.subscriptions.push(chatPart, processManager, openCodeManager, statusBar, controller);
+
+  // ─── Commands ──────────────────────────────────────────────────────────────
   context.subscriptions.push(
-    diffDecorator,
-    diffCodeLens,
-    vscode.languages.registerCodeLensProvider({ pattern: '**' }, diffCodeLens),
-    vscode.commands.registerCommand('avn.keepFileChanges', (filePath: string) => {
-      viewProvider.keepFileChanges(filePath);
+    vscode.commands.registerCommand('avn.openChat', async () => {
+      await vscode.commands.executeCommand('workbench.action.chat.open', { query: '@avn ' });
     }),
-    vscode.commands.registerCommand('avn.revertFileChanges', (filePath: string) => {
-      viewProvider.revertFileChanges(filePath);
+
+    vscode.commands.registerCommand('avn.switchModel', () => pickModel(controller)),
+    vscode.commands.registerCommand('avn.switchMode',  () => pickMode(controller)),
+    vscode.commands.registerCommand('avn.switchThinking', () => pickThinking(controller)),
+
+    vscode.commands.registerCommand('avn.addOpenCodeModel', async () => {
+      vscode.window.showInformationMessage('Add-OpenCode-model UI coming in next commit.');
     }),
-    vscode.commands.registerCommand('avn.keepHunk', (filePath: string, idx: number) => {
-      viewProvider.keepHunk(filePath, idx);
+
+    vscode.commands.registerCommand('avn.indexProject', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
+      const indexer = new ProjectIndexer(processManager);
+      const cts = new vscode.CancellationTokenSource();
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'AVN: Indexing project…', cancellable: true },
+        async (_progress, cancelToken) => {
+          cancelToken.onCancellationRequested(() => cts.cancel());
+          const notifStream: ChatStream = {
+            markdown: (text) => vscode.window.showInformationMessage(text.slice(0, 200)),
+          };
+          await indexer.index(root, controller.getModel(), notifStream, cts.token);
+        },
+      );
+      cts.dispose();
     }),
-    vscode.commands.registerCommand('avn.revertHunk', (filePath: string, idx: number) => {
-      viewProvider.revertHunk(filePath, idx);
-    }),
-    vscode.commands.registerCommand('avn.nextHunk', () => jumpToHunk(diffDecorator,  1)),
-    vscode.commands.registerCommand('avn.prevHunk', () => jumpToHunk(diffDecorator, -1)),
   );
 
-  // ─── Sidebar Webview ────────────────────────────────────────────────────────
-  const viewProvider = new ClaudeViewProvider(
-    context.extensionUri,
-    chatHandler,
-    usageTracker,
-    getWorkspaceRoot,
-    diffCodeLens,
-    diffDecorator,
-  );
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(ClaudeViewProvider.viewType, viewProvider, {
-      webviewOptions: { retainContextWhenHidden: true },
-    })
-  );
-
-  // ─── Inline Completions ─────────────────────────────────────────────────────
+  // ─── Inline Completions (kept; ghost-text suggestions on type) ────────────
   const completionProvider = new InlineCompletionProvider(
     processManager,
     statusBar,
-    () => chatHandler.getModel(),
-    () => chatHandler.getYolo(),
-    getWorkspaceRoot,
+    () => controller.getModel(),
+    () => controller.getMode() === 'auto',
+    () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
   );
   context.subscriptions.push(
     vscode.languages.registerInlineCompletionItemProvider({ pattern: '**' }, completionProvider),
     completionProvider,
   );
 
-  // ─── Code Actions ───────────────────────────────────────────────────────────
+  // ─── Right-click Code Actions ──────────────────────────────────────────────
   context.subscriptions.push(
     vscode.languages.registerCodeActionsProvider(
       { pattern: '**' },
       new ClaudeCodeActionProvider(),
       { providedCodeActionKinds: ClaudeCodeActionProvider.providedCodeActionKinds },
-    )
+    ),
   );
 
   const codeActionCommands: Array<[string, string]> = [
@@ -105,95 +91,83 @@ export function activate(context: vscode.ExtensionContext): void {
     ['claude.action.addDocs',  'addDocs'],
     ['claude.action.findBugs', 'findBugs'],
   ];
-
   for (const [cmd, actionType] of codeActionCommands) {
     context.subscriptions.push(
-      vscode.commands.registerCommand(cmd, () => runCodeAction(actionType, chatHandler, viewProvider))
+      vscode.commands.registerCommand(cmd, () => runCodeAction(actionType, controller, processManager)),
     );
   }
-
   context.subscriptions.push(
     vscode.commands.registerCommand('claude.action.custom', async () => {
       const instruction = await vscode.window.showInputBox({
-        prompt: "Describe what you'd like Claude to do with this selection…",
-        placeHolder: 'e.g., Convert this to async/await syntax',
+        prompt: "Describe what you'd like AVN to do with this selection…",
       });
-      if (instruction) { runCodeAction('custom', chatHandler, viewProvider, instruction); }
-    })
+      if (instruction) { runCodeAction('custom', controller, processManager, instruction); }
+    }),
   );
-
-  // ─── Commands ───────────────────────────────────────────────────────────────
-  context.subscriptions.push(
-    vscode.commands.registerCommand('claude.openChat', () =>
-      vscode.commands.executeCommand(`${ClaudeViewProvider.viewType}.focus`)
-    ),
-
-    vscode.commands.registerCommand('claude.toggleYolo', () => {
-      chatHandler.toggleYolo();
-    }),
-
-    vscode.commands.registerCommand('claude.switchModel', () => chatHandler.switchModel()),
-
-    vscode.commands.registerCommand('claude.switchBudget', () => chatHandler.switchBudget()),
-
-    vscode.commands.registerCommand('claude.showOutput', () => processManager.showOutput()),
-
-    vscode.commands.registerCommand('claude.restartProcess', () => {
-      vscode.window.showInformationMessage('Claude process restarted.');
-    }),
-
-    vscode.commands.registerCommand('claude.indexProject', async () => {
-      const root = getWorkspaceRoot();
-      if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
-      const indexer = new ProjectIndexer(processManager);
-      const cts = new vscode.CancellationTokenSource();
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: 'Claude: Indexing project…', cancellable: true },
-        async (_progress, cancelToken) => {
-          cancelToken.onCancellationRequested(() => cts.cancel());
-          const notifStream: ChatStream = {
-            markdown: (text) => vscode.window.showInformationMessage(text.slice(0, 200)),
-          };
-          await indexer.index(root, chatHandler.getModel(), notifStream, cts.token);
-        },
-      );
-      cts.dispose();
-    }),
-
-    // Usage now shown inside the webview with a visual progress panel
-    vscode.commands.registerCommand('claude.showUsage', () => viewProvider.showUsage()),
-  );
-
-  // ─── Disposables ────────────────────────────────────────────────────────────
-  context.subscriptions.push(processManager, openCodeManager, statusBar);
 }
 
 export function deactivate(): void { /* nothing */ }
 
-/** Move the cursor to the next/prev AI-edit hunk in the active editor. */
-function jumpToHunk(decorator: DiffDecorator, direction: 1 | -1): void {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor) { return; }
-  const hunks = decorator.hunksFor(editor.document.uri.fsPath);
-  if (!hunks.length) { vscode.window.showInformationMessage('No AI changes in this file.'); return; }
-  const cursorLine = editor.selection.active.line + 1; // 1-based
-  let target: number | undefined;
-  if (direction > 0) {
-    const next = hunks.find(h => h.newStart > cursorLine);
-    target = (next ?? hunks[0]).newStart;
-  } else {
-    const prev = [...hunks].reverse().find(h => h.newStart < cursorLine);
-    target = (prev ?? hunks[hunks.length - 1]).newStart;
+// ───────────────────────────────────────────────────────────────────────────
+// QuickPick helpers
+// ───────────────────────────────────────────────────────────────────────────
+
+async function pickModel(controller: BackendController): Promise<void> {
+  const cfg     = vscode.workspace.getConfiguration('avn');
+  const claude  = cfg.get<string[]>('claudeModels',   []);
+  const opencode = cfg.get<string[]>('openCodeModels', []);
+  const items: vscode.QuickPickItem[] = [
+    { label: 'Claude', kind: vscode.QuickPickItemKind.Separator },
+    ...claude.map(m => ({ label: m, description: m === controller.getModel() ? '✓ current' : '' })),
+    { label: 'OpenCode', kind: vscode.QuickPickItemKind.Separator },
+    ...(opencode.length
+      ? opencode.map(m => ({ label: m, description: m === controller.getModel() ? '✓ current' : '' }))
+      : [{ label: '(no OpenCode models — run "AVN: Add OpenCode Model")', description: '', alwaysShow: true }]),
+  ];
+  const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Select model' });
+  if (!picked || picked.kind === vscode.QuickPickItemKind.Separator) { return; }
+  if (picked.label.startsWith('(no OpenCode')) {
+    vscode.commands.executeCommand('avn.addOpenCodeModel'); return;
   }
-  const pos   = new vscode.Position(Math.max(0, (target ?? 1) - 1), 0);
-  editor.selection = new vscode.Selection(pos, pos);
-  editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+  await controller.setModel(picked.label);
 }
+
+async function pickMode(controller: BackendController): Promise<void> {
+  const current = controller.getMode();
+  const items: Array<{ label: string; value: AvnMode; description: string }> = [
+    { label: 'Ask before edits',   value: 'ask',  description: current === 'ask'  ? '✓ current' : '' },
+    { label: 'Edit automatically', value: 'auto', description: current === 'auto' ? '✓ current' : '' },
+    { label: 'Plan mode (no edits)', value: 'plan', description: current === 'plan' ? '✓ current' : '' },
+  ];
+  const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Select AVN mode' });
+  if (picked) { await controller.setMode(picked.value); }
+}
+
+async function pickThinking(controller: BackendController): Promise<void> {
+  if (!controller.supportsThinking()) {
+    vscode.window.showInformationMessage(`Extended thinking is not supported by ${controller.getModel()}.`);
+    return;
+  }
+  const current = controller.getThinking();
+  const items: Array<{ label: string; value: ThinkingBudget | undefined; description: string }> = [
+    { label: 'Off',                  value: undefined, description: current === undefined ? '✓ current' : '' },
+    { label: 'Low (1k tokens)',      value: 'low',     description: current === 'low'    ? '✓ current' : '' },
+    { label: 'Medium (4k tokens)',   value: 'medium',  description: current === 'medium' ? '✓ current' : '' },
+    { label: 'High (10k tokens)',    value: 'high',    description: current === 'high'   ? '✓ current' : '' },
+    { label: 'Max (32k tokens)',     value: 'max',     description: current === 'max'    ? '✓ current' : '' },
+  ];
+  const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Extended thinking budget' });
+  if (picked) { await controller.setThinking(picked.value); }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Code-action runner — routes right-click actions through the chat panel.
+// ───────────────────────────────────────────────────────────────────────────
 
 async function runCodeAction(
   actionType: string,
-  chatHandler: ChatHandler,
-  viewProvider: ClaudeViewProvider,
+  _controller: BackendController,
+  _processManager: ProcessManager,
   customInstruction?: string,
 ): Promise<void> {
   const editor = vscode.window.activeTextEditor;
@@ -201,17 +175,21 @@ async function runCodeAction(
     vscode.window.showInformationMessage('Select some code first.');
     return;
   }
-
   const doc         = editor.document;
   const selection   = doc.getText(editor.selection);
   const surrounding = getSurroundingCode(doc, editor.selection);
   const diagnostics = getDiagnosticsText(doc, editor.selection);
 
-  const fullPrompt  = buildCodeActionPrompt(
+  const fullPrompt = buildCodeActionPrompt(
     actionType, selection, doc.fileName, doc.languageId,
     surrounding, diagnostics, customInstruction,
   );
   const displayText = `/${actionType}: ${path.basename(doc.fileName)}`;
 
-  await viewProvider.sendExternalPrompt(fullPrompt, displayText);
+  // Open the chat panel with `@avn <displayText>` and the full prompt as the query body.
+  // Two-step: open with summary line, then we'd need to inject the full prompt — VS Code's
+  // chat.open API supports a single `query` string, so we send the full prompt directly.
+  await vscode.commands.executeCommand('workbench.action.chat.open', {
+    query: `@avn ${displayText}\n\n${fullPrompt}`,
+  });
 }

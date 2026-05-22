@@ -35,29 +35,11 @@ export interface TokenUsage {
   cache_read_input_tokens?: number;
 }
 
-export interface FileEdit {
-  path: string;
-  content: string;
-  linesAdded: number;
-  linesRemoved: number;
-}
-
-export interface ConversationTurn {
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: number;
-}
-
 export type ThinkingBudget = 'low' | 'medium' | 'high' | 'max';
 
 export type BackendType = 'claude' | 'opencode';
 
-export interface SymbolRef {
-  name: string;
-  filePath: string;
-  line: number;
-  kind: string;
-}
+export type AvnMode = 'ask' | 'auto' | 'plan';
 
 export const THINKING_BUDGET_TOKENS: Record<ThinkingBudget, number> = {
   low: 1024,
@@ -65,24 +47,3 @@ export const THINKING_BUDGET_TOKENS: Record<ThinkingBudget, number> = {
   high: 10000,
   max: 32000,
 };
-
-export interface StoredMessage {
-  role: 'user' | 'assistant';
-  text: string;        // raw user text or accumulated markdown for assistant
-  timestamp: number;
-  model?: string;
-  tokens?: number;
-}
-
-export interface UsageRecord {
-  timestamp: number;
-  inputTokens: number;
-  outputTokens: number;
-}
-
-export interface UsageSummary {
-  sessionTokens: number;
-  dailyTokens: number;
-  weeklyTokens: number;
-  sessionRequests: number;
-}
