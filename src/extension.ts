@@ -16,6 +16,7 @@ import { SessionManager } from './sessionManager';
 import { ProjectIndexer } from './projectIndexer';
 import { ClaudeViewProvider } from './claudeViewProvider';
 import { DiffCodeLensProvider } from './diffCodeLens';
+import { DiffDecorator } from './diffDecorator';
 import { ChatStream } from './types';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -36,9 +37,11 @@ export function activate(context: vscode.ExtensionContext): void {
     sessionManager,
   );
 
-  // ─── Diff CodeLens (per-file Keep / Revert after AI edits) ─────────────────
-  const diffCodeLens = new DiffCodeLensProvider();
+  // ─── Diff visualization (decorations + per-hunk CodeLens) ──────────────────
+  const diffDecorator = new DiffDecorator();
+  const diffCodeLens  = new DiffCodeLensProvider(diffDecorator);
   context.subscriptions.push(
+    diffDecorator,
     diffCodeLens,
     vscode.languages.registerCodeLensProvider({ pattern: '**' }, diffCodeLens),
     vscode.commands.registerCommand('avn.keepFileChanges', (filePath: string) => {
@@ -47,6 +50,14 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('avn.revertFileChanges', (filePath: string) => {
       viewProvider.revertFileChanges(filePath);
     }),
+    vscode.commands.registerCommand('avn.keepHunk', (filePath: string, idx: number) => {
+      viewProvider.keepHunk(filePath, idx);
+    }),
+    vscode.commands.registerCommand('avn.revertHunk', (filePath: string, idx: number) => {
+      viewProvider.revertHunk(filePath, idx);
+    }),
+    vscode.commands.registerCommand('avn.nextHunk', () => jumpToHunk(diffDecorator,  1)),
+    vscode.commands.registerCommand('avn.prevHunk', () => jumpToHunk(diffDecorator, -1)),
   );
 
   // ─── Sidebar Webview ────────────────────────────────────────────────────────
@@ -56,6 +67,7 @@ export function activate(context: vscode.ExtensionContext): void {
     usageTracker,
     getWorkspaceRoot,
     diffCodeLens,
+    diffDecorator,
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ClaudeViewProvider.viewType, viewProvider, {
@@ -157,6 +169,26 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void { /* nothing */ }
+
+/** Move the cursor to the next/prev AI-edit hunk in the active editor. */
+function jumpToHunk(decorator: DiffDecorator, direction: 1 | -1): void {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) { return; }
+  const hunks = decorator.hunksFor(editor.document.uri.fsPath);
+  if (!hunks.length) { vscode.window.showInformationMessage('No AI changes in this file.'); return; }
+  const cursorLine = editor.selection.active.line + 1; // 1-based
+  let target: number | undefined;
+  if (direction > 0) {
+    const next = hunks.find(h => h.newStart > cursorLine);
+    target = (next ?? hunks[0]).newStart;
+  } else {
+    const prev = [...hunks].reverse().find(h => h.newStart < cursorLine);
+    target = (prev ?? hunks[hunks.length - 1]).newStart;
+  }
+  const pos   = new vscode.Position(Math.max(0, (target ?? 1) - 1), 0);
+  editor.selection = new vscode.Selection(pos, pos);
+  editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+}
 
 async function runCodeAction(
   actionType: string,

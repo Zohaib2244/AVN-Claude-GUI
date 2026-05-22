@@ -1,42 +1,59 @@
 import * as vscode from 'vscode';
+import { DiffDecorator } from './diffDecorator';
 
 export class DiffCodeLensProvider implements vscode.CodeLensProvider, vscode.Disposable {
-  private _files  = new Set<string>(); // absolute paths
   private _emitter = new vscode.EventEmitter<void>();
   readonly onDidChangeCodeLenses = this._emitter.event;
 
-  setFiles(absolutePaths: string[]): void {
-    this._files = new Set(absolutePaths);
-    this._emitter.fire();
-  }
+  constructor(private readonly decorator: DiffDecorator) {}
 
-  removeFile(absolutePath: string): void {
-    this._files.delete(absolutePath);
-    this._emitter.fire();
-  }
-
-  clearAll(): void {
-    this._files.clear();
-    this._emitter.fire();
-  }
+  refresh(): void { this._emitter.fire(); }
 
   provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
-    if (!this._files.has(document.uri.fsPath)) { return []; }
-    const range = new vscode.Range(0, 0, 0, 0);
-    return [
-      new vscode.CodeLens(range, {
-        title: '$(check) Keep',
-        command: 'avn.keepFileChanges',
-        arguments: [document.uri.fsPath],
-        tooltip: 'Accept AI changes to this file',
+    const hunks = this.decorator.hunksFor(document.uri.fsPath);
+    if (!hunks.length) { return []; }
+    const filePath = document.uri.fsPath;
+    const lenses: vscode.CodeLens[] = [];
+
+    // Top-of-file: keep all / undo all for this file
+    const top = new vscode.Range(0, 0, 0, 0);
+    lenses.push(
+      new vscode.CodeLens(top, {
+        title:     `$(check-all) Keep all (${hunks.length})`,
+        command:   'avn.keepFileChanges',
+        arguments: [filePath],
+        tooltip:   'Accept every AI change in this file',
       }),
-      new vscode.CodeLens(range, {
-        title: '$(discard) Revert file',
-        command: 'avn.revertFileChanges',
-        arguments: [document.uri.fsPath],
-        tooltip: 'Undo AI changes to this file only',
+      new vscode.CodeLens(top, {
+        title:     '$(discard) Undo all',
+        command:   'avn.revertFileChanges',
+        arguments: [filePath],
+        tooltip:   'Revert every AI change in this file',
       }),
-    ];
+    );
+
+    // Per-hunk lenses
+    hunks.forEach((h, idx) => {
+      const line     = Math.max(0, h.newStart - 1);
+      const range    = new vscode.Range(line, 0, line, 0);
+      const summary  = `−${h.oldLines.length} +${h.newLines.length}`;
+      lenses.push(
+        new vscode.CodeLens(range, {
+          title:     `$(check) Keep  ${summary}`,
+          command:   'avn.keepHunk',
+          arguments: [filePath, idx],
+          tooltip:   'Accept this change',
+        }),
+        new vscode.CodeLens(range, {
+          title:     '$(discard) Undo this',
+          command:   'avn.revertHunk',
+          arguments: [filePath, idx],
+          tooltip:   'Revert just this change',
+        }),
+      );
+    });
+
+    return lenses;
   }
 
   dispose(): void { this._emitter.dispose(); }

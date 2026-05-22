@@ -73,7 +73,27 @@
       {
         "command": "avn.revertFileChanges",
         "title": "AVN: Revert AI changes to this file"
+      },
+      {
+        "command": "avn.keepHunk",
+        "title": "AVN: Keep this AI change"
+      },
+      {
+        "command": "avn.revertHunk",
+        "title": "AVN: Undo this AI change"
+      },
+      {
+        "command": "avn.nextHunk",
+        "title": "AVN: Next AI change"
+      },
+      {
+        "command": "avn.prevHunk",
+        "title": "AVN: Previous AI change"
       }
+    ],
+    "keybindings": [
+      { "command": "avn.nextHunk", "key": "alt+down", "mac": "alt+down", "when": "editorTextFocus" },
+      { "command": "avn.prevHunk", "key": "alt+up",   "mac": "alt+up",   "when": "editorTextFocus" }
     ],
     "configuration": {
       "title": "AVN Chat",

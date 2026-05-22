@@ -10,6 +10,8 @@ import { UsageTracker } from './usageTracker';
 import { DroppedItem, getActiveEditorContext } from './contextAssembler';
 import { SessionManager } from './sessionManager';
 import { DiffCodeLensProvider } from './diffCodeLens';
+import { DiffDecorator } from './diffDecorator';
+import { computeFileHunks } from './hunkParser';
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.avif', '.tiff']);
 const IMAGE_MIME: Record<string, string> = {
@@ -54,6 +56,9 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
   private _fileCacheTs = 0;
   // Tracks unaccepted file edits across consecutive prompts (files = absolute paths)
   private _pendingChanges: { firstHash: string; files: Set<string>; added: number; removed: number } | null = null;
+  // Content snapshots for files the user has explicitly accepted. Future diffs that match
+  // these snapshots are ignored so previously-kept edits don't re-appear in the change bar.
+  private _acceptedSnapshot = new Map<string, string>();
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -61,9 +66,16 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     private readonly usageTracker: UsageTracker,
     private readonly getWorkspaceRoot: () => string | undefined,
     private readonly diffCodeLens: DiffCodeLensProvider,
+    private readonly diffDecorator: DiffDecorator,
   ) {}
 
   private get _sessionManager(): SessionManager { return this.chatHandler.getSessionManager(); }
+
+  private _diffLogChannel: vscode.OutputChannel | undefined;
+  private _diffLog(): vscode.OutputChannel {
+    if (!this._diffLogChannel) { this._diffLogChannel = vscode.window.createOutputChannel('AVN Edits (Debug)'); }
+    return this._diffLogChannel;
+  }
 
   public resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -95,9 +107,11 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     await this.runRequest(fullPrompt, undefined, root);
   }
 
-  /** Called by the CodeLens "Keep" button — dismiss lens for this file, no file changes. */
+  /** "Keep all" lens — clear all hunks for this file (no file edits). */
   public keepFileChanges(absolutePath: string): void {
-    this.diffCodeLens.removeFile(absolutePath);
+    this.diffDecorator.clearFile(absolutePath);
+    this.diffCodeLens.refresh();
+    this._snapshotAccepted(absolutePath);
     this._pendingChanges?.files.delete(absolutePath);
     if (this._pendingChanges?.files.size === 0) {
       this._pendingChanges = null;
@@ -105,31 +119,111 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Called by the CodeLens "Revert file" button — reset this file to pre-AI state. */
+  /** "Undo all" lens — git-revert the whole file to pre-AI state. */
   public async revertFileChanges(absolutePath: string): Promise<void> {
     const root = this.getWorkspaceRoot();
     if (!root || !this._pendingChanges) { return; }
     const relPath   = path.relative(root, absolutePath);
     const firstHash = this._pendingChanges.firstHash;
-
     await new Promise<void>(resolve => {
       cp.exec(`git checkout ${firstHash} -- "${relPath}"`, { cwd: root }, (err) => {
-        if (err) {
-          // File was created by AI (didn't exist at firstHash) — delete it
-          try { fs.unlinkSync(absolutePath); } catch { /* ignore */ }
-        }
+        if (err) { try { fs.unlinkSync(absolutePath); } catch { /* ignore */ } }
         resolve();
       });
     });
-
-    this.diffCodeLens.removeFile(absolutePath);
+    this.diffDecorator.clearFile(absolutePath);
+    this.diffCodeLens.refresh();
+    // Undo restored the file to its pre-AI state — drop any stale accepted snapshot
+    this._acceptedSnapshot.delete(absolutePath);
     this._pendingChanges.files.delete(absolutePath);
-
     if (this._pendingChanges.files.size === 0) {
       this._pendingChanges = null;
       this._post({ type: 'updateChangeBar', files: 0 });
     } else {
       const stats = await this._getDiffStats(this._pendingChanges.firstHash, root);
+      this._pendingChanges.added   = stats.added;
+      this._pendingChanges.removed = stats.removed;
+      this._post({ type: 'updateChangeBar', files: stats.files.length, added: stats.added, removed: stats.removed, filePaths: stats.files });
+    }
+  }
+
+  /** Save current file contents as the "accepted" baseline for this file. */
+  private _snapshotAccepted(absolutePath: string): void {
+    try { this._acceptedSnapshot.set(absolutePath, fs.readFileSync(absolutePath, 'utf8')); }
+    catch { /* file may have been deleted */ }
+  }
+
+  /** Per-hunk "Keep" — drops just this hunk's decoration and lens. */
+  public keepHunk(absolutePath: string, hunkIdx: number): void {
+    this.diffDecorator.removeHunk(absolutePath, hunkIdx);
+    this.diffCodeLens.refresh();
+    // If this was the last hunk, also drop the file from pending
+    if (this.diffDecorator.hunksFor(absolutePath).length === 0) {
+      this._pendingChanges?.files.delete(absolutePath);
+      if (this._pendingChanges?.files.size === 0) {
+        this._pendingChanges = null;
+        this._post({ type: 'updateChangeBar', files: 0 });
+      } else if (this._pendingChanges) {
+        this._refreshChangeBar();
+      }
+    }
+  }
+
+  /** Per-hunk "Undo this" — applies a workspace edit replacing just the hunk's lines. */
+  public async revertHunk(absolutePath: string, hunkIdx: number): Promise<void> {
+    const hunks = this.diffDecorator.hunksFor(absolutePath);
+    const hunk  = hunks[hunkIdx];
+    if (!hunk) { return; }
+
+    const uri = vscode.Uri.file(absolutePath);
+    const doc = await vscode.workspace.openTextDocument(uri);
+
+    // Replace the hunk's newCount lines starting at newStart with hunk.oldLines
+    const startLine = Math.max(0, hunk.newStart - 1);
+    const endLine   = startLine + hunk.newCount;   // exclusive
+    const start     = new vscode.Position(startLine, 0);
+    const end       = endLine >= doc.lineCount
+      ? new vscode.Position(doc.lineCount, 0)
+      : new vscode.Position(endLine, 0);
+    const range     = new vscode.Range(start, end);
+    const replacement = hunk.oldLines.length ? hunk.oldLines.join('\n') + '\n' : '';
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(uri, range, replacement);
+    const applied = await vscode.workspace.applyEdit(edit);
+    if (!applied) { return; }
+    await doc.save();
+
+    // Recompute hunks (line numbers shifted)
+    await this._recomputeHunksFor(absolutePath);
+    this._refreshChangeBar();
+  }
+
+  /** Re-run git diff for one file and update decorator + lens. */
+  private async _recomputeHunksFor(absolutePath: string): Promise<void> {
+    const root = this.getWorkspaceRoot();
+    if (!root || !this._pendingChanges) { return; }
+    const hunks = await computeFileHunks(this._pendingChanges.firstHash, absolutePath, root);
+    this.diffDecorator.setFileHunks(absolutePath, hunks);
+    this.diffCodeLens.refresh();
+    if (hunks.length === 0) {
+      this._pendingChanges.files.delete(absolutePath);
+      if (this._pendingChanges.files.size === 0) {
+        this._pendingChanges = null;
+        this._post({ type: 'updateChangeBar', files: 0 });
+      }
+    }
+  }
+
+  /** Re-run aggregate git diff stats and push change-bar to the webview. */
+  private async _refreshChangeBar(): Promise<void> {
+    const root = this.getWorkspaceRoot();
+    if (!root || !this._pendingChanges) { return; }
+    const stats = await this._getDiffStats(this._pendingChanges.firstHash, root);
+    if (stats.files.length === 0) {
+      this._pendingChanges = null;
+      this._post({ type: 'updateChangeBar', files: 0 });
+    } else {
       this._pendingChanges.added   = stats.added;
       this._pendingChanges.removed = stats.removed;
       this._post({ type: 'updateChangeBar', files: stats.files.length, added: stats.added, removed: stats.removed, filePaths: stats.files });
@@ -204,7 +298,8 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
           const clearSid = this.chatHandler.getActiveSessionId();
           if (clearSid) { this._sessionManager.clearMessages(clearSid); }
           this._pendingChanges = null;
-          this.diffCodeLens.clearAll();
+          this._acceptedSnapshot.clear();
+          this.diffDecorator.clearAll(); this.diffCodeLens.refresh();
           this._post({ type: 'clearMessages' });
           this._post({ type: 'updateChangeBar', files: 0 });
           if (root) { this._pushSessions(root); }
@@ -238,7 +333,8 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         if (!root) { break; }
         this.chatHandler.createNewSession(root);
         this._pendingChanges = null;
-        this.diffCodeLens.clearAll();
+        this._acceptedSnapshot.clear();
+        this.diffDecorator.clearAll(); this.diffCodeLens.refresh();
         this._post({ type: 'clearMessages' });
         this._post({ type: 'updateChangeBar', files: 0 });
         this._post(this._fullState());
@@ -251,7 +347,8 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         const s = this.chatHandler.switchSession(root, msg.sessionId);
         if (s) {
           this._pendingChanges = null;
-          this.diffCodeLens.clearAll();
+          this._acceptedSnapshot.clear();
+          this.diffDecorator.clearAll(); this.diffCodeLens.refresh();
           this._post({ type: 'clearMessages' });
           this._post({ type: 'updateChangeBar', files: 0 });
           this._post(this._fullState());
@@ -513,15 +610,19 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'acceptChanges':
+        // Snapshot every currently-pending file so future diffs ignore this state
+        for (const abs of this._pendingChanges?.files ?? []) { this._snapshotAccepted(abs); }
         this._pendingChanges = null;
-        this.diffCodeLens.clearAll();
+        this.diffDecorator.clearAll(); this.diffCodeLens.refresh();
         break;
 
       case 'undoAllChanges': {
         if (!this._pendingChanges || !root) { break; }
         const undoHash = this._pendingChanges.firstHash;
+        // Files are about to be restored to pre-AI state — drop their accepted snapshots
+        for (const abs of this._pendingChanges.files) { this._acceptedSnapshot.delete(abs); }
         this._pendingChanges = null;
-        this.diffCodeLens.clearAll();
+        this.diffDecorator.clearAll(); this.diffCodeLens.refresh();
         const ok = await this._gitRestore(undoHash, root);
         if (ok) {
           vscode.window.showInformationMessage('All changes reverted to before this sequence of prompts.');
@@ -700,14 +801,49 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
       this._post({ type: 'setStatus', status: 'idle' });
 
       // Check if any files changed since the baseline and update the change bar
+      if (!checkpointHash) {
+        this._diffLog().appendLine('[runRequest] no git HEAD — decorations disabled (workspace must be a git repo)');
+      }
       if (checkpointHash && root) {
         const baseHash  = this._pendingChanges?.firstHash ?? checkpointHash;
-        const stats     = await this._getDiffStats(baseHash, root);
+        const rawStats  = await this._getDiffStats(baseHash, root);
+        // Filter out files whose current content matches a previously-accepted snapshot —
+        // those are "kept" edits the user already approved and shouldn't reappear.
+        const keptRel: string[] = [];
+        const filteredFiles: string[] = [];
+        for (const f of rawStats.files) {
+          const abs = path.join(root, f);
+          const snap = this._acceptedSnapshot.get(abs);
+          if (snap !== undefined) {
+            let current: string | undefined;
+            try { current = fs.readFileSync(abs, 'utf8'); } catch { /* missing */ }
+            if (current !== undefined && current === snap) { keptRel.push(f); continue; }
+          }
+          filteredFiles.push(f);
+        }
+        // Clear decorations for any kept-still-matching files in case they were tracked before
+        for (const f of keptRel) {
+          const abs = path.join(root, f);
+          this.diffDecorator.clearFile(abs);
+        }
+        // Recompute aggregate +/− across the filtered set
+        const stats = filteredFiles.length === rawStats.files.length
+          ? rawStats
+          : await this._getDiffStatsForFiles(baseHash, root, filteredFiles);
+        this._diffLog().appendLine(`[runRequest] baseHash=${baseHash.slice(0,8)}  raw=${rawStats.files.length}  kept-filtered=${keptRel.length}  shown=${stats.files.length}  +${stats.added} -${stats.removed}`);
         if (stats.files.length > 0) {
           const absPaths  = stats.files.map(f => path.join(root, f));
           this._pendingChanges = { firstHash: baseHash, files: new Set(absPaths), added: stats.added, removed: stats.removed };
-          this.diffCodeLens.setFiles(absPaths);
+          await Promise.all(absPaths.map(async (abs) => {
+            const hunks = await computeFileHunks(baseHash, abs, root);
+            this.diffDecorator.setFileHunks(abs, hunks);
+          }));
+          this.diffCodeLens.refresh();
           this._post({ type: 'updateChangeBar', files: stats.files.length, added: stats.added, removed: stats.removed, filePaths: stats.files });
+        } else {
+          // Either nothing changed, or everything that "changed" was already accepted
+          this._pendingChanges = null;
+          this._post({ type: 'updateChangeBar', files: 0 });
         }
       }
     }
@@ -819,6 +955,30 @@ export class ClaudeViewProvider implements vscode.WebviewViewProvider {
   private _getDiffStats(baseHash: string, cwd: string): Promise<{ files: string[]; added: number; removed: number }> {
     return new Promise(resolve => {
       cp.exec(`git diff --numstat ${baseHash}`, { cwd }, (err, stdout) => {
+        if (err || !stdout.trim()) { resolve({ files: [], added: 0, removed: 0 }); return; }
+        const files: string[] = [];
+        let added = 0, removed = 0;
+        for (const line of stdout.trim().split('\n')) {
+          const parts = line.split('\t');
+          if (parts.length >= 3) {
+            const a = parseInt(parts[0], 10);
+            const r = parseInt(parts[1], 10);
+            if (!isNaN(a)) { added   += a; }
+            if (!isNaN(r)) { removed += r; }
+            if (parts[2]) { files.push(parts[2]); }
+          }
+        }
+        resolve({ files, added, removed });
+      });
+    });
+  }
+
+  /** Same as _getDiffStats but restricted to a specific subset of relative file paths. */
+  private _getDiffStatsForFiles(baseHash: string, cwd: string, relFiles: string[]): Promise<{ files: string[]; added: number; removed: number }> {
+    if (relFiles.length === 0) { return Promise.resolve({ files: [], added: 0, removed: 0 }); }
+    const quoted = relFiles.map(f => `"${f.split(path.sep).join('/')}"`).join(' ');
+    return new Promise(resolve => {
+      cp.exec(`git diff --numstat ${baseHash} -- ${quoted}`, { cwd }, (err, stdout) => {
         if (err || !stdout.trim()) { resolve({ files: [], added: 0, removed: 0 }); return; }
         const files: string[] = [];
         let added = 0, removed = 0;
