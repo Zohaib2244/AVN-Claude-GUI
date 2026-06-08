@@ -26,13 +26,34 @@
         "description": "Claude Code or OpenCode CLI — switch backends from the status bar",
         "isSticky": true,
         "commands": [
-          { "name": "fix",     "description": "Fix issues in the active file" },
-          { "name": "explain", "description": "Explain the active file" },
-          { "name": "index",   "description": "Build .claude/project-context.md" },
-          { "name": "model",   "description": "Switch model" },
-          { "name": "mode",    "description": "Switch mode (Ask / Auto / Plan)" },
-          { "name": "think",   "description": "Toggle extended thinking (Claude only)" },
-          { "name": "help",    "description": "List available commands" }
+          {
+            "name": "fix",
+            "description": "Fix issues in the active file"
+          },
+          {
+            "name": "explain",
+            "description": "Explain the active file"
+          },
+          {
+            "name": "index",
+            "description": "Build .claude/project-context.md"
+          },
+          {
+            "name": "model",
+            "description": "Switch model"
+          },
+          {
+            "name": "mode",
+            "description": "Switch mode (Ask / Auto / Plan)"
+          },
+          {
+            "name": "think",
+            "description": "Toggle extended thinking (Claude only)"
+          },
+          {
+            "name": "help",
+            "description": "List available commands"
+          }
         ]
       }
     ],
@@ -60,10 +81,36 @@
       {
         "command": "avn.indexProject",
         "title": "AVN: Index Project"
+      },
+      {
+        "command": "avn.showDiff",
+        "title": "AVN: Show before/after diff for a file"
+      },
+      {
+        "command": "avn.keepFileChanges",
+        "title": "AVN: Keep all AI changes in this file"
+      },
+      {
+        "command": "avn.revertFileChanges",
+        "title": "AVN: Revert all AI changes in this file"
+      },
+      {
+        "command": "avn.keepHunk",
+        "title": "AVN: Keep this AI change"
+      },
+      {
+        "command": "avn.revertHunk",
+        "title": "AVN: Undo this AI change"
       }
     ],
     "keybindings": [
-      { "command": "avn.openChat", "key": "cmd+l", "mac": "cmd+l", "win": "ctrl+l", "linux": "ctrl+l" }
+      {
+        "command": "avn.openChat",
+        "key": "cmd+l",
+        "mac": "cmd+l",
+        "win": "ctrl+l",
+        "linux": "ctrl+l"
+      }
     ],
     "configuration": {
       "title": "AVN Chat",
@@ -112,8 +159,12 @@
     "package": "npx @vscode/vsce package --no-dependencies"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.2",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.94.0",
     "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "diff": "^9.0.0"
   }
 }

@@ -6,7 +6,11 @@ import { StatusBarManager } from './statusBar';
 import { BackendController } from './backendController';
 import { AvnChatParticipant } from './chatParticipant';
 import { addOpenCodeModelsFlow } from './openCodeModelBrowser';
-import { OriginalContentProvider, showChangedFileDiffs } from './diffViewer';
+import { SnapshotContentProvider } from './diffViewer';
+import { ChangeTracker } from './changeTracker';
+import { DiffDecorator } from './diffDecorator';
+import { DiffCodeLensProvider } from './diffCodeLens';
+import * as diffActions from './diffActions';
 import { InlineCompletionProvider } from './completionProvider';
 import {
   ClaudeCodeActionProvider,
@@ -22,14 +26,33 @@ export function activate(context: vscode.ExtensionContext): void {
   const openCodeManager = new OpenCodeManager();
   const statusBar       = new StatusBarManager();
   const controller      = new BackendController(context);
-  const participant     = new AvnChatParticipant(processManager, openCodeManager, controller, statusBar);
 
-  // ─── Diff content provider (serves HEAD: content for vscode.diff) ──────────
+  // ─── AI-edit review: change tracking, in-editor decorations + CodeLens ─────
+  const changeTracker    = new ChangeTracker();
+  const decorator        = new DiffDecorator();
+  const codeLensProvider = new DiffCodeLensProvider(decorator);
+  const snapshotProvider = new SnapshotContentProvider();
+
+  const participant = new AvnChatParticipant(
+    processManager, openCodeManager, controller, statusBar,
+    changeTracker, decorator, codeLensProvider, snapshotProvider,
+  );
+
   context.subscriptions.push(
-    vscode.workspace.registerTextDocumentContentProvider(
-      OriginalContentProvider.scheme,
-      new OriginalContentProvider(),
-    ),
+    changeTracker, decorator, codeLensProvider,
+    vscode.workspace.registerTextDocumentContentProvider(SnapshotContentProvider.scheme, snapshotProvider),
+    vscode.languages.registerCodeLensProvider({ pattern: '**' }, codeLensProvider),
+
+    // Thin wrapper so the chat's "Show diff" command link can pass plain-string URIs —
+    // command-link arguments round-trip through JSON, where `vscode.Uri` objects aren't
+    // guaranteed to revive correctly but strings always do.
+    vscode.commands.registerCommand('avn.showDiff', (originalUriStr: string, currentUriStr: string, title: string) =>
+      vscode.commands.executeCommand('vscode.diff', vscode.Uri.parse(originalUriStr), vscode.Uri.parse(currentUriStr), title)),
+
+    vscode.commands.registerCommand('avn.keepHunk',          (absPath: string, idx: number) => diffActions.keepHunk(decorator, changeTracker, absPath, idx)),
+    vscode.commands.registerCommand('avn.revertHunk',        (absPath: string, idx: number) => diffActions.revertHunk(decorator, changeTracker, absPath, idx)),
+    vscode.commands.registerCommand('avn.keepFileChanges',   (absPath: string)              => diffActions.keepFileChanges(decorator, changeTracker, absPath)),
+    vscode.commands.registerCommand('avn.revertFileChanges', (absPath: string)              => diffActions.revertFileChanges(decorator, changeTracker, absPath)),
   );
 
   // ─── Chat Participant ──────────────────────────────────────────────────────
