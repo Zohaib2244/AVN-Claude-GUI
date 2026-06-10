@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as Diff from 'diff';
 import { ProcessManager, isAuthError } from './processManager';
 import { OpenCodeManager } from './openCodeManager';
 import { BackendController } from './backendController';
@@ -10,6 +9,7 @@ import { SnapshotContentProvider } from './diffViewer';
 import { ChangeTracker, FileChange, TurnSnapshot } from './changeTracker';
 import { DiffDecorator } from './diffDecorator';
 import { DiffCodeLensProvider } from './diffCodeLens';
+import { DiffCardsProvider } from './diffCardsProvider';
 import { ClaudeStreamEvent } from './types';
 
 const CLAUDE_SETUP = [
@@ -47,6 +47,7 @@ export class AvnChatParticipant {
     private decorator:        DiffDecorator,
     private codeLensProvider: DiffCodeLensProvider,
     private snapshotProvider: SnapshotContentProvider,
+    private diffCards:        DiffCardsProvider,
   ) {}
 
   /** Resolve ChatRequest references into prompt context, saving images to disk. */
@@ -185,6 +186,7 @@ export class AvnChatParticipant {
   ): Promise<void> {
     const changes = await this.changeTracker.computeChanges(root, snapshot);
     this._applyDecorations(changes);
+    this.diffCards.show(changes);
     await this._renderChangedFiles(changes, response);
   }
 
@@ -200,7 +202,7 @@ export class AvnChatParticipant {
     this.codeLensProvider.refresh();
   }
 
-  /** List every changed file in the chat reply: diff block + anchor + Show diff/Keep/Revert. */
+  /** List every changed file in the chat reply: anchor + status badge + Show diff/Keep/Revert. */
   private async _renderChangedFiles(
     changes:  FileChange[],
     response: vscode.ChatResponseStream,
@@ -221,9 +223,6 @@ export class AvnChatParticipant {
       response.markdown('\n');
       response.anchor(currentUri, change.relPath);
       response.markdown(` _(${status})_\n`);
-      for (const block of formatDiffBlocks(change.relPath, change.beforeContent, change.afterContent)) {
-        response.markdown(block);
-      }
       response.markdown(actionLinks(originalUri, currentUri, title, change.absPath));
 
       this.log.appendLine(`  · ${change.relPath} (+${added} −${removed})`);
@@ -402,21 +401,6 @@ function looksBinary(bytes: Uint8Array): boolean {
   const n = Math.min(bytes.length, 4096);
   for (let i = 0; i < n; i++) { if (bytes[i] === 0) { return true; } }
   return false;
-}
-
-/**
- * Render each hunk of a file's diff as its own small ```diff fenced block — one visually
- * distinct "box" per edit, labelled "Edit i of N" — instead of one long combined block.
- * Much easier to scan when the AI touched several separate spots in the same file.
- */
-function formatDiffBlocks(relPath: string, before: string, after: string): string[] {
-  const patch = Diff.structuredPatch(relPath, relPath, before, after, '', '', { context: 1 });
-  return patch.hunks.map((h, i) => {
-    const label  = patch.hunks.length > 1 ? `_Edit ${i + 1} of ${patch.hunks.length}_\n` : '';
-    const header = `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`;
-    const body   = h.lines.filter(l => !l.startsWith('\\')).join('\n');
-    return `${label}\`\`\`diff\n${header}\n${body}\n\`\`\`\n`;
-  });
 }
 
 /**

@@ -10,6 +10,7 @@ import { SnapshotContentProvider } from './diffViewer';
 import { ChangeTracker } from './changeTracker';
 import { DiffDecorator } from './diffDecorator';
 import { DiffCodeLensProvider } from './diffCodeLens';
+import { DiffCardsProvider } from './diffCardsProvider';
 import * as diffActions from './diffActions';
 import { InlineCompletionProvider } from './completionProvider';
 import {
@@ -32,14 +33,15 @@ export function activate(context: vscode.ExtensionContext): void {
   const decorator        = new DiffDecorator();
   const codeLensProvider = new DiffCodeLensProvider(decorator);
   const snapshotProvider = new SnapshotContentProvider();
+  const diffCards        = new DiffCardsProvider();
 
   const participant = new AvnChatParticipant(
     processManager, openCodeManager, controller, statusBar,
-    changeTracker, decorator, codeLensProvider, snapshotProvider,
+    changeTracker, decorator, codeLensProvider, snapshotProvider, diffCards,
   );
 
   context.subscriptions.push(
-    changeTracker, decorator, codeLensProvider,
+    changeTracker, decorator, codeLensProvider, diffCards,
     vscode.workspace.registerTextDocumentContentProvider(SnapshotContentProvider.scheme, snapshotProvider),
     vscode.languages.registerCodeLensProvider({ pattern: '**' }, codeLensProvider),
 
