@@ -4,7 +4,10 @@
       "PowerShell(& \"C:\\\\Users\\\\zohai\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code.cmd\" --install-extension \"F:\\\\AVN Claude GUI\\\\avn-claude-gui-0.1.0.vsix\" --force)",
       "Bash(Get-ChildItem -Path \"F:\\\\AVN Claude GUI\\\\src\\\\\" -File -Recurse | Select-Object -ExpandProperty FullName)",
       "Bash(./node_modules/.bin/tsc -p /Users/zohaib2469/Documents/Zohaib_Files/Personal/My_Projects/AVN-Claude-GUI/tsconfig.json)",
-      "Bash(./node_modules/.bin/tsc -p tsconfig.json)"
+      "Bash(./node_modules/.bin/tsc -p tsconfig.json)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('engines:',d.get\\('engines'\\)\\); print\\('enabledApiProposals:',d.get\\('enabledApiProposals'\\)\\); print\\('@types/vscode:',d.get\\('devDependencies',{}\\).get\\('@types/vscode'\\)\\)\")",
+      "Bash(awk '/interface ChatResponseStream/,/^\\\\t}/' index.d.ts)",
+      "Bash(git ls-tree *)"
     ]
   }
 }

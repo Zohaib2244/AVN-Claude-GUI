@@ -9,7 +9,7 @@ import { Hunk } from './hunkParser';
  *   • overview-ruler ticks on the right scrollbar
  */
 export class DiffDecorator implements vscode.Disposable {
-  private _log = vscode.window.createOutputChannel('AVN Diff (Debug)');
+  private _log = vscode.window.createOutputChannel('AVN Diff');
 
   private _addedLine     = vscode.window.createTextEditorDecorationType({
     backgroundColor:    new vscode.ThemeColor('diffEditor.insertedLineBackground'),

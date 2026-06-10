@@ -1,15 +1,16 @@
 {
   "name": "avn-claude-gui",
   "displayName": "AVN Chat",
-  "description": "Standalone sidebar chat powered by the Claude Code CLI",
-  "version": "0.2.1",
+  "description": "Claude Code + OpenCode CLI as a VS Code Chat participant",
+  "version": "0.3.0",
   "publisher": "personal",
   "private": true,
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.94.0"
   },
   "categories": [
     "AI",
+    "Chat",
     "Other"
   ],
   "activationEvents": [
@@ -17,62 +18,81 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "claude-sidebar",
-          "title": "AVN Chat",
-          "icon": "media/claude-icon.svg"
-        }
-      ]
-    },
-    "views": {
-      "claude-sidebar": [
-        {
-          "type": "webview",
-          "id": "claude.chatView",
-          "name": "Chat",
-          "icon": "media/claude-icon.svg",
-          "contextualTitle": "AVN Chat"
-        }
-      ]
-    },
+    "chatParticipants": [
+      {
+        "id": "avn.chat",
+        "name": "avn",
+        "fullName": "AVN",
+        "description": "Claude Code or OpenCode CLI — switch backends from the status bar",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "fix",
+            "description": "Fix issues in the active file"
+          },
+          {
+            "name": "explain",
+            "description": "Explain the active file"
+          },
+          {
+            "name": "index",
+            "description": "Build .claude/project-context.md"
+          },
+          {
+            "name": "model",
+            "description": "Switch model"
+          },
+          {
+            "name": "mode",
+            "description": "Switch mode (Ask / Auto / Plan)"
+          },
+          {
+            "name": "think",
+            "description": "Toggle extended thinking (Claude only)"
+          },
+          {
+            "name": "help",
+            "description": "List available commands"
+          }
+        ]
+      }
+    ],
     "commands": [
       {
-        "command": "claude.openChat",
-        "title": "Claude: Open Chat"
+        "command": "avn.openChat",
+        "title": "AVN: Open Chat"
       },
       {
-        "command": "claude.toggleYolo",
-        "title": "Claude: Toggle YOLO Mode"
+        "command": "avn.switchModel",
+        "title": "AVN: Switch Model"
       },
       {
-        "command": "claude.showUsage",
-        "title": "Claude: Show Usage"
+        "command": "avn.switchMode",
+        "title": "AVN: Switch Mode (Ask / Auto / Plan)"
       },
       {
-        "command": "claude.switchModel",
-        "title": "Claude: Switch Model"
+        "command": "avn.switchThinking",
+        "title": "AVN: Switch Thinking Budget"
       },
       {
-        "command": "claude.switchBudget",
-        "title": "Claude: Switch Thinking Budget"
+        "command": "avn.addOpenCodeModel",
+        "title": "AVN: Add OpenCode Model"
       },
       {
-        "command": "claude.restartProcess",
-        "title": "Claude: Restart CLI Process"
+        "command": "avn.indexProject",
+        "title": "AVN: Index Project"
       },
       {
-        "command": "claude.indexProject",
-        "title": "Claude: Index Project"
+        "command": "avn.showDiff",
+        "title": "AVN: Show before/after diff for a file"
       },
       {
         "command": "avn.keepFileChanges",
-        "title": "AVN: Keep AI changes to this file"
+        "title": "AVN: Keep all AI changes in this file"
       },
       {
         "command": "avn.revertFileChanges",
-        "title": "AVN: Revert AI changes to this file"
+        "title": "AVN: Revert all AI changes in this file"
       },
       {
         "command": "avn.keepHunk",
@@ -81,24 +101,21 @@
       {
         "command": "avn.revertHunk",
         "title": "AVN: Undo this AI change"
-      },
-      {
-        "command": "avn.nextHunk",
-        "title": "AVN: Next AI change"
-      },
-      {
-        "command": "avn.prevHunk",
-        "title": "AVN: Previous AI change"
       }
     ],
     "keybindings": [
-      { "command": "avn.nextHunk", "key": "alt+down", "mac": "alt+down", "when": "editorTextFocus" },
-      { "command": "avn.prevHunk", "key": "alt+up",   "mac": "alt+up",   "when": "editorTextFocus" }
+      {
+        "command": "avn.openChat",
+        "key": "cmd+l",
+        "mac": "cmd+l",
+        "win": "ctrl+l",
+        "linux": "ctrl+l"
+      }
     ],
     "configuration": {
       "title": "AVN Chat",
       "properties": {
-        "claude.models": {
+        "avn.claudeModels": {
           "type": "array",
           "default": [
             "claude-opus-4-7",
@@ -109,27 +126,17 @@
           ],
           "description": "Available Claude models"
         },
-        "claude.defaultModel": {
+        "avn.openCodeModels": {
+          "type": "array",
+          "default": [],
+          "description": "Available OpenCode models (format: provider/model). Add from the status-bar model picker."
+        },
+        "avn.defaultModel": {
           "type": "string",
           "default": "claude-sonnet-4-6",
-          "description": "Default model to use"
+          "description": "Default model for new sessions"
         },
-        "claude.maxFolderContextKb": {
-          "type": "number",
-          "default": 500,
-          "description": "Maximum KB of folder content to include in context"
-        },
-        "claude.completionDebounceMs": {
-          "type": "number",
-          "default": 500,
-          "description": "Debounce delay in ms for inline completions"
-        },
-        "claude.dailyTokenLimit": {
-          "type": "number",
-          "default": 0,
-          "description": "Daily token limit (0 = no limit)"
-        },
-        "claude.thinkingModels": {
+        "avn.thinkingModels": {
           "type": "array",
           "default": [
             "claude-opus-4-7",
@@ -137,10 +144,10 @@
           ],
           "description": "Models that support extended thinking"
         },
-        "claude.openCodeModels": {
-          "type": "array",
-          "default": [],
-          "description": "Available OpenCode models (format: provider/model). Add from the model picker in AVN Chat."
+        "avn.completionDebounceMs": {
+          "type": "number",
+          "default": 500,
+          "description": "Debounce delay in ms for inline completions"
         }
       }
     }
@@ -152,8 +159,12 @@
     "package": "npx @vscode/vsce package --no-dependencies"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.2",
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "^1.94.0",
     "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "diff": "^9.0.0"
   }
 }
